@@ -17,7 +17,14 @@ Modo cabeza (--cabeza, requiere --base): primeros planos de la cabeza a partir d
 a un paso posterior de 3D. Se recorta la cabeza de cada vista base (cuadrado) y se genera, a 1024x1024:
   frente  = editar [recorte frente base]                   -> retrato de cabeza y hombros de la misma persona, boca cerrada
   lado    = editar [frente generado, recorte lado base]    -> misma persona de perfil, mismo encuadre
-  espalda = editar [frente generado, recorte espalda base] -> misma persona de espaldas, mismo encuadre"""
+  espalda = editar [frente generado, recorte espalda base] -> misma persona de espaldas, mismo encuadre
+
+Modo detalle (--detalle, requiere --base): toma imagenes ya generadas (--vistas-detalle, def. frente,lado; v<--base-variante>_<vista>.png) y las
+rehace con la MISMA composicion (misma cara, rasgos en la misma posicion, mismo encuadre) pero mas nitidas: ojos con iris y brillo, poros, pelos,
+trama de tela. Salida del mismo aspecto (cuadradas: 1328x1328, resolucion nativa de Qwen-Image) y con los mismos nombres v<n>_<vista>.png.
+
+--pasos N (def. 8 = LoRA Lightning). Con N > 8 se usa el modelo completo SIN LoRA y con la receta de la ficha del modelo (40 pasos, true_cfg 4.0,
+prompt negativo " "): mas lento (CFG = 2 pasadas por paso) pero mas nitido."""
 import json, os, shutil, tempfile, time
 
 from . import yamlmini
@@ -36,6 +43,11 @@ FRAC_CABEZA = 0.26                      # lado del recorte = esta fraccion del a
 LADO_REF = 512                          # lado mayor de las referencias de material (recortes de detalle): menos tokens de imagen
 ANCHO, ALTO = 768, 1328               # ~1328 px de alto, multiplos de 16
 PASOS = 8
+LADO_DETALLE = 1328                     # resolucion nativa de Qwen-Image: salida cuadrada del modo detalle
+SEMILLAS_DETALLE = [7]
+VISTAS_DETALLE = "frente,lado"
+CFG_COMPLETO = 4.0                      # ficha de Qwen/Qwen-Image-Edit-2511: num_inference_steps=40, true_cfg_scale=4.0, negative_prompt=" "
+NEG_PROMPT = " "
 MODELO = "Qwen/Qwen-Image-Edit-2511"
 LORA = "lightx2v/Qwen-Image-Edit-2511-Lightning (8 pasos V1.0 bf16)"
 LICENCIA = "Apache 2.0"
@@ -43,6 +55,8 @@ LICENCIA = "Apache 2.0"
 ARRANQUE_S = 210 + 170
 RECARGA_S = 90            # recarga del transformer entre la ronda de frentes y la de lado/espalda
 SEG_IMG = 30              # por imagen (A40/A6000, 8 pasos, 2-4 imagenes de entrada)
+SEG_FIJO = 6              # parte de SEG_IMG que no crece con los pasos (VAE, transferencias)
+FACTOR_DETALLE = 1.2      # 1328x1328 frente a 768x1328 (+30 % tokens de imagen), pero con una sola imagen de entrada en vez de 2-4
 MARGEN = 1.5
 VENV = "/root/venv-imagen"
 
@@ -181,12 +195,65 @@ def prompt_cabeza_vista(vista, extra=""):
     return s
 
 
-def encontrar_base(carpeta, variante=1):
+def prompt_detalle(vista, extra=""):
+    """Modo detalle. Imagen 1 = retrato ya generado (se conserva identico); solo se sube nitidez y detalle fino."""
+    s = ("Picture 1 is a portrait of a person. Reproduce Picture 1 identically: the same person, the same face shape, every facial feature "
+         "(eyes, eyebrows, nose, mouth, ears, beard outline) in exactly the same position and size, the same head pose and viewing angle, "
+         "the same framing and crop, the same clothes, colors, lighting, expression and plain white background. Do not move, resize, "
+         "reshape, rotate or redraw anything. The outline of the head, the face and the hood must overlap Picture 1 exactly, with the head "
+         "turned by the same angle and occupying exactly the same area of the image. Keep the exact same skin tone and complexion (do not make "
+         "the skin lighter or ruddier, no freckles or blemishes that are not in Picture 1), the same hair, the same beard and the same hood shape. ")
+    s += ("Only increase sharpness and fine detail: crisp sharp eyes with a detailed iris and a small bright highlight, visible natural skin "
+          "pores and fine skin texture, individual beard hairs and hair strands, the weave of the fabric and the grain of the leather. "
+          "Photorealistic, high resolution, no blur, no smoothing. ")
+    if extra:
+        s += extra.strip().rstrip(".") + ". "
+    s += f"Same {'side profile' if vista == 'lado' else 'back' if vista == 'espalda' else 'front'} view as in Picture 1."
+    return s
+
+
+def tam_detalle(origen, lado=LADO_DETALLE):
+    """Tamano de salida del modo detalle: cuadrada -> lado x lado (1328x1328); si no, mismo aspecto con ~lado^2 px, multiplos de 16."""
+    try:
+        from PIL import Image
+        w, h = Image.open(origen).size
+    except ImportError:        # sin Pillow: ancho/alto de la cabecera PNG (la base del modo detalle son PNG del propio assetgen)
+        import struct
+        with open(origen, "rb") as f:
+            cab = f.read(24)
+        if cab[:8] != b"\x89PNG\r\n\x1a\n":
+            raise SystemExit(f"sin Pillow solo se leen PNG para --detalle: {origen}")
+        w, h = struct.unpack(">II", cab[16:24])
+    if w == h:
+        return lado, lado
+    k = (lado * lado / (w * h)) ** 0.5
+    return max(16, round(w * k / 16) * 16), max(16, round(h * k / 16) * 16)
+
+
+def plan_detalle(variante, vistas, tams, extra=""):
+    """Plan del modo detalle: un trabajo por vista (id v<variante>_<vista>), entrada = esa imagen sola (carpeta detalle/ del pod)."""
+    jobs = []
+    for i, v in enumerate(vistas):
+        w, h = tams[v]
+        jobs.append({"id": f"v{variante}_{v}", "variante": variante, "vista": v, "seed": SEMILLAS_DETALLE[0], "prompt": prompt_detalle(v, extra),
+                     "width": w, "height": h, "imagenes": [{"ref": f"detalle/{v}.png"}]})
+    return jobs
+
+
+def parsear_vistas_detalle(txt):
+    vs = [x.strip().lower() for x in (txt or VISTAS_DETALLE).split(",") if x.strip()]
+    malas = [v for v in vs if v not in VISTAS]
+    if malas or not vs:
+        raise SystemExit(f"--vistas-detalle no valido: {txt!r} (usa una lista de frente,lado,espalda separada por comas)")
+    return list(dict.fromkeys(vs))
+
+
+def encontrar_base(carpeta, variante=1, vistas=VISTAS):
     """{'frente','lado','espalda'} de un concepto ya generado: v<variante>_<vista>.png o, si no, <vista>.png en esa carpeta."""
     if not os.path.isdir(carpeta):
         raise SystemExit(f"--base no es una carpeta: {carpeta}")
     out = {}
-    for v in VISTAS:
+    for v in vistas:
         for nombre in (f"v{variante}_{v}", v):
             for ext in EXTS:
                 f = os.path.join(carpeta, nombre + ext)
@@ -195,7 +262,7 @@ def encontrar_base(carpeta, variante=1):
                     break
             if v in out:
                 break
-    faltan = [v for v in VISTAS if v not in out]
+    faltan = [v for v in vistas if v not in out]
     if faltan:
         raise SystemExit(f"en {carpeta} faltan las vistas base: {', '.join(faltan)} (espero v{variante}_frente|lado|espalda.png o frente|lado|espalda.png)")
     return out
@@ -334,22 +401,36 @@ def plan_trabajos(n_variantes, n_refs, extra="", semillas=None, refinar=False, c
     return jobs
 
 
-def segundos_estimados(jobs):
+def config_modelo(pasos=PASOS):
+    """Receta del editor segun --pasos: <= 8 = LoRA Lightning (sin CFG); > 8 = modelo completo sin LoRA con true_cfg de la ficha del modelo."""
+    pasos = int(pasos)
+    if pasos < 1:
+        raise SystemExit("--pasos debe ser >= 1")
+    if pasos > PASOS:
+        return {"steps": pasos, "lora": False, "true_cfg": CFG_COMPLETO, "negative_prompt": NEG_PROMPT}
+    return {"steps": pasos, "lora": True, "true_cfg": 1.0, "negative_prompt": NEG_PROMPT}
+
+
+def segundos_estimados(jobs, pasos=PASOS, true_cfg=1.0, escala=1.0):
+    """Arranque + pesos + por imagen. El tiempo por imagen crece con los pasos (x2 con CFG: 2 pasadas) y con el tamano (`escala`).
+    Con el modelo completo (sin LoRA) el arranque es el mismo (los pesos del transformer son los mismos)."""
     rondas = 2 if any(any("gen" in im for im in j["imagenes"]) for j in jobs) else 1
-    return (ARRANQUE_S + 30 + RECARGA_S * (rondas - 1) + len(jobs) * SEG_IMG) * MARGEN
+    por_img = SEG_FIJO + (SEG_IMG - SEG_FIJO) * (pasos / PASOS) * (2 if true_cfg > 1 else 1) * escala
+    return (ARRANQUE_S + 30 + RECARGA_S * (rondas - 1) + len(jobs) * por_img) * MARGEN
 
 
-def hoja_concepto(out, n, destino, ancho=1000, base=None, cuadrada=False):
+def hoja_concepto(out, n, destino, ancho=1000, base=None, cuadrada=False, vistas=VISTAS, primera=1):
     """Una fila por variante con frente | lado | espalda, <= `ancho` px de ancho, con el numero de variante.
     base = {'frente','lado','espalda': ruta}: fila inicial de comparacion (etiqueta 'B') con el concepto de partida.
     cuadrada=True (modo cabeza): celdas cuadradas."""
     from PIL import Image, ImageDraw, ImageFont
     gap = 4
-    celda_w = (ancho - gap * 4) // 3
+    nc = len(vistas)
+    celda_w = (ancho - gap * (nc + 1)) // nc
     celda_h = celda_w if cuadrada else round(celda_w * ALTO / ANCHO)
-    filas = ([("B", {v: base[v] for v in VISTAS if v in base})] if base else []) + \
-            [(str(i + 1), {v: os.path.join(out, f"v{i + 1}_{v}.png") for v in VISTAS}) for i in range(n)]
-    hoja = Image.new("RGB", (gap * 4 + celda_w * 3, gap + len(filas) * (celda_h + gap)), (40, 40, 40))
+    filas = ([("B", {v: base[v] for v in vistas if v in base})] if base else []) + \
+            [(str(primera + i), {v: os.path.join(out, f"v{primera + i}_{v}.png") for v in vistas}) for i in range(n)]
+    hoja = Image.new("RGB", (gap * (nc + 1) + celda_w * nc, gap + len(filas) * (celda_h + gap)), (40, 40, 40))
     try:
         fuente = ImageFont.load_default(size=26)
     except TypeError:
@@ -357,7 +438,7 @@ def hoja_concepto(out, n, destino, ancho=1000, base=None, cuadrada=False):
     d = ImageDraw.Draw(hoja)
     for i, (etiqueta, rutas) in enumerate(filas):
         y = gap + i * (celda_h + gap)
-        for j, vista in enumerate(VISTAS):
+        for j, vista in enumerate(vistas):
             f = rutas.get(vista)
             if not f or not os.path.exists(f):
                 continue
@@ -375,11 +456,23 @@ def cmd_concepto(args):
     base_dir = getattr(args, "base", None)
     refinar = bool(base_dir)
     cabeza = bool(getattr(args, "cabeza", False))
+    detalle = bool(getattr(args, "detalle", False))
     if cabeza and not refinar:
         raise SystemExit("--cabeza necesita --base (carpeta con el concepto del que se recorta la cabeza)")
+    if detalle and not refinar:
+        raise SystemExit("--detalle necesita --base (carpeta con las imagenes ya generadas v<n>_<vista>.png que se rehacen mas nitidas)")
+    if detalle and cabeza:
+        raise SystemExit("--detalle y --cabeza no se combinan")
+    cfg = config_modelo(getattr(args, "pasos", PASOS))
+    variante = getattr(args, "base_variante", 1)
+    vd = list(VISTAS)
     if refinar:
-        vistas = encontrar_base(os.path.abspath(os.path.expanduser(base_dir)), getattr(args, "base_variante", 1))
-        if cabeza:
+        if detalle:
+            vd = parsear_vistas_detalle(getattr(args, "vistas_detalle", None))
+        vistas = encontrar_base(os.path.abspath(os.path.expanduser(base_dir)), variante, vd if detalle else VISTAS)
+        if detalle:
+            log(f"modo detalle (--detalle): se rehacen {', '.join(vd)} de la variante {variante} con la misma composicion y mas nitidez")
+        elif cabeza:
             log("modo cabeza (--cabeza): primeros planos de la cabeza recortada de las 3 vistas base")
         else:
             log("modo refinado (--base): se conserva el concepto base y las referencias solo aportan material/realismo")
@@ -388,28 +481,35 @@ def cmd_concepto(args):
     else:
         raise SystemExit("hace falta --vistas (original) o --base (concepto ya generado a refinar)")
     refs = listar_referencias(args.referencias)
-    if cabeza and refs:
-        log("AVISO: --cabeza ignora --referencias (la entrada son solo los recortes de la cabeza)")
+    if (cabeza or detalle) and refs:
+        log(f"AVISO: {'--cabeza' if cabeza else '--detalle'} ignora --referencias (la entrada son solo las imagenes de la propia base)")
         refs = []
     if not refs and not refinar:
         log("sin --referencias: el estilo sale solo del texto del prompt (la vista del original solo da el diseno)")
-    if refinar and not refs and not cabeza:
+    if refinar and not refs and not cabeza and not detalle:
         log("AVISO: --base sin --referencias: solo se re-renderiza la base (sin recortes de material el realismo apenas cambia)")
     if len(refs) > 3:
         log(f"AVISO: {len(refs)} referencias; el editor rinde mejor con <= 3 (cada imagen extra alarga la generacion)")
-    nvar = args.variantes
+    nvar = 1 if detalle else args.variantes
     extra = args.prompt or ""
-    jobs = plan_trabajos(nvar, len(refs), extra, refinar=refinar, cabeza=cabeza)
-    ancho, alto = (LADO_CABEZA, LADO_CABEZA) if cabeza else (ANCHO, ALTO)
+    if detalle:
+        tams = {v: tam_detalle(vistas[v]) for v in vd}
+        jobs = plan_detalle(variante, vd, tams, extra)
+        ancho, alto = jobs[0]["width"], jobs[0]["height"]
+    else:
+        jobs = plan_trabajos(nvar, len(refs), extra, refinar=refinar, cabeza=cabeza)
+        ancho, alto = (LADO_CABEZA, LADO_CABEZA) if cabeza else (ANCHO, ALTO)
+    log(f"editor: {cfg['steps']} pasos, {'LoRA Lightning' if cfg['lora'] else 'modelo completo sin LoRA'}, true_cfg {cfg['true_cfg']}")
     out = os.path.abspath(os.path.expanduser(args.salida))
     os.makedirs(out, exist_ok=True)
     pend = [j for j in jobs if args.forzar or not os.path.exists(os.path.join(out, j["id"] + ".png"))]
     for j in jobs[:3]:
         log(f"prompt {j['id']}: {j['prompt']}")
-    log(f"{len(jobs)} imagen(es) en total, {len(pend)} por generar ({nvar} variante(s) x frente/lado/espalda) a {ancho}x{alto}")
+    log(f"{len(jobs)} imagen(es) en total, {len(pend)} por generar " +
+        (f"(variante {variante}: {', '.join(vd)})" if detalle else f"({nvar} variante(s) x frente/lado/espalda)") + f" a {ancho}x{alto}")
     if args.dry_run or pend:
         c = _candidatas(args, min_gb=40, solo48=True)
-        seg = segundos_estimados(pend or jobs)
+        seg = segundos_estimados(pend or jobs, cfg["steps"], cfg["true_cfg"], FACTOR_DETALLE if detalle else 1.0)
         _revisar_presupuesto(args, c, seg)
         if args.dry_run:
             log("dry-run: candidatas " + ", ".join(f"{n} ${pr:.2f}" for _, n, pr, _ in c))
@@ -426,23 +526,26 @@ def cmd_concepto(args):
         stage = tempfile.mkdtemp(prefix="assetgen-concepto-")
         bajado = tempfile.mkdtemp(prefix="assetgen-conceptoout-")
         try:
-            carp = "cabeza" if cabeza else "base" if refinar else "vistas"
+            carp = "detalle" if detalle else "cabeza" if cabeza else "base" if refinar else "vistas"
             os.makedirs(os.path.join(stage, carp)); os.makedirs(os.path.join(stage, "refs"))
-            for v in VISTAS:
+            for v in (vd if detalle else VISTAS):
                 if cabeza:
                     shutil.copy(recortes[v], os.path.join(stage, carp, v + ".png"))
+                elif detalle:        # imagen ya generada: se sube tal cual (misma composicion)
+                    shutil.copy(vistas[v], os.path.join(stage, carp, v + ".png"))
                 elif refinar:        # el concepto base ya esta encuadrado a la proporcion de salida: se sube tal cual
                     shutil.copy(vistas[v], os.path.join(stage, carp, v + ".png"))
                 else:
                     preparar_imagen(vistas[v], os.path.join(stage, carp, v + ".png"))
             for k, r in enumerate(refs):
                 (preparar_referencia if refinar else preparar_imagen)(r, os.path.join(stage, "refs", f"ref{k + 1}.png"))
-            existentes = [j for j in jobs if j not in pend and j["vista"] == "frente"]
+            existentes = [] if detalle else [j for j in jobs if j not in pend and j["vista"] == "frente"]
             if existentes:        # un frente ya generado sirve de entrada para lado/espalda pendientes
                 os.makedirs(os.path.join(stage, "gen"))
                 for j in existentes:
                     shutil.copy(os.path.join(out, j["id"] + ".png"), os.path.join(stage, "gen", j["id"] + ".png"))
-            plan = {"model": MODELO, "steps": PASOS, "width": ancho, "height": alto, "jobs": pend}
+            plan = {"model": MODELO, "steps": cfg["steps"], "lora": cfg["lora"], "true_cfg": cfg["true_cfg"],
+                    "negative_prompt": cfg["negative_prompt"], "width": ancho, "height": alto, "jobs": pend}
             with open(os.path.join(stage, "plan.json"), "w") as f:
                 json.dump(plan, f, indent=1, ensure_ascii=False)
             archivos = ["plan.json", carp] + (["refs"] if refs else []) + (["gen"] if existentes else [])
@@ -481,19 +584,22 @@ def cmd_concepto(args):
     faltan = [j["id"] for j in jobs if not os.path.exists(os.path.join(out, j["id"] + ".png"))]
     if faltan:
         raise SystemExit(f"Faltan imagenes: {', '.join(faltan)}")
-    datos = {"modelo": MODELO, "lora": LORA, "licencia": LICENCIA, "pasos": PASOS, "tamano": f"{ancho}x{alto}",
-             "modo": "cabeza" if cabeza else "refinado" if refinar else "concepto", "base": [os.path.basename(vistas[v]) for v in VISTAS] if refinar else None,
+    datos = {"modelo": MODELO, "lora": LORA if cfg["lora"] else None, "licencia": LICENCIA, "pasos": cfg["steps"], "true_cfg": cfg["true_cfg"],
+             "tamano": f"{ancho}x{alto}",
+             "modo": "detalle" if detalle else "cabeza" if cabeza else "refinado" if refinar else "concepto",
+             "base": [os.path.basename(vistas[v]) for v in (vd if detalle else VISTAS)] if refinar else None,
              "referencias": [os.path.basename(r) for r in refs], "prompt_extra": extra, "variantes": nvar,
              "trabajos": [{k: j[k] for k in ("id", "vista", "seed", "prompt")} | {"entradas": [im.get("ref") or "gen:" + im["gen"] for im in j["imagenes"]]} for j in jobs],
              **{k: resultados[k] for k in ("gpu", "precio_h", "tiempos_s", "costo_usd", "imagenes") if k in resultados}}
     with open(os.path.join(out, "concepto.yaml"), "w") as f:
         yaml.safe_dump(datos, f, allow_unicode=True, sort_keys=False)
     try:
-        hoja = hoja_concepto(out, nvar, os.path.join(out, "hoja_concepto.jpg"), base=recortes if cabeza else vistas if refinar else None, cuadrada=cabeza)
+        hoja = hoja_concepto(out, nvar, os.path.join(out, "hoja_concepto.jpg"), base=recortes if cabeza else vistas if refinar else None,
+                             cuadrada=cabeza or (detalle and ancho == alto), vistas=vd if detalle else VISTAS, primera=variante if detalle else 1)
     except ImportError:
         hoja = "(sin Pillow no hay hoja)"
     sel = os.path.join(out, "seleccion.yaml")
-    if not os.path.exists(sel):
+    if not os.path.exists(sel) and not detalle:
         with open(sel, "w") as f:
             f.write("# variante de concepto elegida (mira hoja_concepto.jpg; 1 = primera fila)\n")
             yaml.safe_dump({"concepto": 1}, f, allow_unicode=True, sort_keys=False)

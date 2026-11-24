@@ -1,9 +1,11 @@
 #!/usr/bin/env python
-"""Editor de imagenes Qwen-Image-Edit-2511 (multi-imagen) + LoRA Lightning 8 pasos, para `assetgen remaster concepto`.
+"""Editor de imagenes Qwen-Image-Edit-2511 (multi-imagen), con LoRA Lightning 8 pasos o modelo completo, para `assetgen remaster concepto`.
 
 Uso:  /root/venv-imagen/bin/python gen_concepto.py plan.json --in DIR --out DIR [--force]
 plan.json: {"model": "Qwen/Qwen-Image-Edit-2511", "steps": 8, "width": 768, "height": 1328,
-            "jobs": [{"id": "v1_frente", "seed": 11, "prompt": "...", "imagenes": [{"ref": "vistas/frente.png"}, {"gen": "v0"}]}]}
+            "lora": true, "true_cfg": 1.0, "negative_prompt": " ",     (opcionales; lora=false = modelo completo sin Lightning;
+            true_cfg > 1 calcula tambien los embeddings negativos, receta de la ficha del modelo: 40 pasos y true_cfg 4.0)
+            "jobs": [{"id": "v1_frente", "seed": 11, (opcional "width"/"height" por trabajo), "prompt": "...", "imagenes": [{"ref": "vistas/frente.png"}, {"gen": "v0"}]}]}
   {"ref": ruta relativa a --in}  imagen de entrada;  {"gen": id}  salida de otro trabajo (OUT/<id>.png, o IN/gen/<id>.png si ya existia).
 Los trabajos se ejecutan por rondas: primero los que no dependen de ninguna salida generada, luego los que si.
 Limite de RAM del cgroup (~50 GB) y de VRAM (48 GB): text encoder (16 GB) y transformer (41 GB) no caben juntos, asi que cada ronda
@@ -21,6 +23,9 @@ args = ap.parse_args()
 plan = json.load(open(args.plan, encoding="utf-8"))
 REPO = plan.get("model", "Qwen/Qwen-Image-Edit-2511")
 STEPS = int(plan.get("steps", 8))
+USAR_LORA = bool(plan.get("lora", True))
+TRUE_CFG = float(plan.get("true_cfg", 1.0))
+NEG_PROMPT = plan.get("negative_prompt", " ")
 W, H = int(plan.get("width", 768)), int(plan.get("height", 1328))
 assert W % 16 == 0 and H % 16 == 0
 os.makedirs(args.out, exist_ok=True)
@@ -62,7 +67,7 @@ for n_ronda, ronda in enumerate(rondas(), 1):
     t1 = time.time()
     p1 = DiffusionPipeline.from_pretrained(REPO, transformer=None, vae=None, torch_dtype=torch.bfloat16)
     p1.text_encoder.to("cuda")
-    emb = {}
+    emb, neg = {}, {}
     with torch.no_grad():
         for j in ronda:
             conds = []
@@ -70,6 +75,11 @@ for n_ronda, ronda in enumerate(rondas(), 1):
                 cw, ch = calculate_dimensions(CONDITION_IMAGE_SIZE, im.width / im.height)
                 conds.append(p1.image_processor.resize(im, ch, cw))
             emb[j["id"]] = tocpu(p1.encode_prompt(prompt=j["prompt"], image=conds, device="cuda"))
+            if TRUE_CFG > 1:      # mismas imagenes de condicion, prompt negativo
+                ne, nm = tocpu(p1.encode_prompt(prompt=NEG_PROMPT, image=conds, device="cuda"))
+                if nm is None:    # encode_prompt devuelve None si todo es valido; algunas versiones exigen la mascara para activar el CFG
+                    nm = torch.ones(ne.shape[:2], dtype=torch.long)
+                neg[j["id"]] = (ne, nm)
     del p1; gc.collect(); torch.cuda.empty_cache()
     print(f"ronda {n_ronda}: embeddings {time.time()-t1:.1f}s", flush=True)
     # fase 2: transformer directo a GPU (41 GB bf16), sin text encoder
@@ -82,22 +92,27 @@ for n_ronda, ronda in enumerate(rondas(), 1):
         "use_dynamic_shifting": True, "use_exponential_sigmas": False, "use_karras_sigmas": False})
     pipe = QwenImageEditPlusPipeline.from_pretrained(REPO, transformer=tr, text_encoder=None, tokenizer=None, processor=None,
                                                      scheduler=sched, torch_dtype=torch.bfloat16)
-    pipe.load_lora_weights("lightx2v/Qwen-Image-Edit-2511-Lightning", weight_name="Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors")
-    pipe.fuse_lora(); pipe.unload_lora_weights()
+    if USAR_LORA:
+        pipe.load_lora_weights("lightx2v/Qwen-Image-Edit-2511-Lightning", weight_name="Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors")
+        pipe.fuse_lora(); pipe.unload_lora_weights()
     pipe.vae.to("cuda"); pipe.vae.enable_tiling()
     torch.cuda.synchronize()
-    print(f"ronda {n_ronda}: transformer+LoRA+VAE {time.time()-t2:.1f}s", flush=True)
+    print(f"ronda {n_ronda}: transformer{'+LoRA' if USAR_LORA else ''}+VAE {time.time()-t2:.1f}s", flush=True)
     for j in ronda:
         pe, pm = emb[j["id"]]
         imgs = [cargar(im) for im in j["imagenes"]]
         torch.cuda.reset_peak_memory_stats(); torch.cuda.synchronize(); t = time.time()
-        img = pipe(image=imgs, prompt_embeds=pe.cuda(), prompt_embeds_mask=pm.cuda() if pm is not None else None, width=W, height=H,
-                   num_inference_steps=STEPS, true_cfg_scale=1.0, generator=torch.Generator("cuda").manual_seed(int(j["seed"]))).images[0]
+        kw = {}
+        if TRUE_CFG > 1:
+            ne, nm = neg[j["id"]]
+            kw = dict(negative_prompt_embeds=ne.cuda(), negative_prompt_embeds_mask=nm.cuda())
+        img = pipe(image=imgs, prompt_embeds=pe.cuda(), prompt_embeds_mask=pm.cuda() if pm is not None else None, width=int(j.get("width", W)), height=int(j.get("height", H)),
+                   num_inference_steps=STEPS, true_cfg_scale=TRUE_CFG, generator=torch.Generator("cuda").manual_seed(int(j["seed"])), **kw).images[0]
         torch.cuda.synchronize(); dt = time.time() - t
         img.save(f"{args.out}/{j['id']}.png")
-        r = dict(id=j["id"], seed=j["seed"], steps=STEPS, width=img.width, height=img.height, entradas=len(imgs), seconds=round(dt, 2),
+        r = dict(id=j["id"], seed=j["seed"], steps=STEPS, true_cfg=TRUE_CFG, lora=USAR_LORA, width=img.width, height=img.height, entradas=len(imgs), seconds=round(dt, 2),
                  vram_peak_gb=round(torch.cuda.max_memory_allocated() / 2**30, 2))
         print(json.dumps(r), flush=True); stats.append(r)
-        json.dump(dict(model=REPO, steps=STEPS, total_seconds=round(time.time() - t_all, 1), imagenes=stats),
+        json.dump(dict(model=REPO, steps=STEPS, true_cfg=TRUE_CFG, lora=USAR_LORA, total_seconds=round(time.time() - t_all, 1), imagenes=stats),
                   open(f"{args.out}/stats.json", "w"), indent=1)
-    del pipe, tr, emb; tr = None; gc.collect(); torch.cuda.empty_cache()
+    del pipe, tr, emb, neg; tr = None; gc.collect(); torch.cuda.empty_cache()

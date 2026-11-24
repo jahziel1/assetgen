@@ -216,6 +216,108 @@ class Cabeza(unittest.TestCase):
         self.assertEqual(os.listdir(os.path.join(d, "o")), [])
 
 
+class Detalle(unittest.TestCase):
+    def base(self, d, tam=(1024, 1024)):
+        b = os.path.join(d, "b"); os.makedirs(b)
+        for n in C.VISTAS:
+            imagen(os.path.join(b, f"v1_{n}.png"), tam=tam)
+        return b
+
+    def test_plan_detalle(self):
+        d = tempfile.mkdtemp(); b = self.base(d)
+        vs = C.parsear_vistas_detalle(None)
+        self.assertEqual(vs, ["frente", "lado"])
+        vistas = C.encontrar_base(b, 1, vs)
+        self.assertEqual(sorted(vistas), ["frente", "lado"])
+        tams = {v: C.tam_detalle(vistas[v]) for v in vs}
+        self.assertEqual(tams["frente"], (1328, 1328))
+        jobs = C.plan_detalle(1, vs, tams, "x")
+        self.assertEqual([j["id"] for j in jobs], ["v1_frente", "v1_lado"])
+        self.assertEqual(jobs[0]["imagenes"], [{"ref": "detalle/frente.png"}])      # entrada = la imagen ya generada, sola
+        self.assertEqual((jobs[1]["width"], jobs[1]["height"]), (1328, 1328))
+        self.assertIn("exactly the same position", jobs[0]["prompt"]); self.assertIn("iris", jobs[0]["prompt"]); self.assertIn("skin tone", jobs[0]["prompt"]); self.assertIn("overlap Picture 1 exactly", jobs[1]["prompt"])
+        self.assertIn("side profile", jobs[1]["prompt"]); self.assertIn("x.", jobs[0]["prompt"])
+        self.assertEqual(C.tam_detalle(vistas["frente"], 1328), (1328, 1328))
+
+    def test_tam_no_cuadrado(self):
+        d = tempfile.mkdtemp(); f = os.path.join(d, "a.png"); imagen(f, tam=(768, 1328), caja=(300, 300, 400, 900))
+        w, h = C.tam_detalle(f)
+        self.assertEqual((w % 16, h % 16), (0, 0)); self.assertAlmostEqual(w / h, 768 / 1328, delta=0.02)
+
+    def test_vistas_detalle_invalidas(self):
+        with self.assertRaises(SystemExit):
+            C.parsear_vistas_detalle("frente,cara")
+        self.assertEqual(C.parsear_vistas_detalle("espalda, frente,frente"), ["espalda", "frente"])
+
+    def test_pasos_desactivan_lora(self):
+        c8 = C.config_modelo(8); c40 = C.config_modelo(40)
+        self.assertTrue(c8["lora"]); self.assertEqual(c8["true_cfg"], 1.0)
+        self.assertFalse(c40["lora"]); self.assertEqual(c40["true_cfg"], 4.0); self.assertEqual(c40["steps"], 40)
+        self.assertEqual(c40["negative_prompt"], " ")
+        with self.assertRaises(SystemExit):
+            C.config_modelo(0)
+
+    def test_estimacion_crece_con_pasos(self):
+        jobs = C.plan_detalle(1, ["frente", "lado"], {"frente": (1328, 1328), "lado": (1328, 1328)})
+        a = C.segundos_estimados(jobs)
+        b = C.segundos_estimados(jobs, 20, 1.0)
+        c = C.segundos_estimados(jobs, 40, 4.0)
+        d = C.segundos_estimados(jobs, 40, 4.0, C.FACTOR_DETALLE)
+        self.assertLess(a, b); self.assertLess(b, c); self.assertLess(c, d)
+
+    def test_detalle_sin_base_falla(self):
+        d = tempfile.mkdtemp(); v = os.path.join(d, "v"); os.makedirs(v)
+        for n in C.VISTAS:
+            imagen(os.path.join(v, n + ".png"))
+        with self.assertRaises(SystemExit) as e:
+            M.main(["remaster", "concepto", "--vistas", v, "--detalle", "--salida", os.path.join(d, "o"), "--dry-run"])
+        self.assertIn("--base", str(e.exception))
+
+    def test_dry_run_detalle(self):
+        from unittest import mock
+        d = tempfile.mkdtemp(); b = self.base(d)
+        cand = [("id", "NVIDIA A40", 0.4, 48)]
+        with mock.patch.object(C, "_candidatas", return_value=cand), mock.patch.object(C, "Sesion", side_effect=AssertionError("no debe encender")):
+            rc = M.main(["remaster", "concepto", "--base", b, "--detalle", "--pasos", "40", "--salida", os.path.join(d, "o"), "--dry-run"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(os.listdir(os.path.join(d, "o")), [])
+
+    def test_plan_json_detalle(self):
+        """El plan que sube el modo detalle lleva lora/true_cfg/negative_prompt segun --pasos (se captura al intentar encender)."""
+        from unittest import mock
+        import json
+        d = tempfile.mkdtemp(); b = self.base(d)
+        cand = [("id", "NVIDIA A40", 0.4, 48)]
+        captado = {}
+
+        class Falso:
+            def __init__(self, *a, **k): pass
+            def __enter__(self): raise RuntimeError("stop")
+            def __exit__(self, *a): return False
+
+        orig = json.dump
+        def espia(obj, f, *a, **k):
+            if isinstance(obj, dict) and "jobs" in obj:
+                captado.update(obj)
+            return orig(obj, f, *a, **k)
+        with mock.patch.object(C, "_candidatas", return_value=cand), mock.patch.object(C, "Sesion", Falso), mock.patch.object(C.json, "dump", espia):
+            with self.assertRaises(RuntimeError):
+                M.main(["remaster", "concepto", "--base", b, "--detalle", "--pasos", "40", "--salida", os.path.join(d, "o")])
+        self.assertFalse(captado["lora"]); self.assertEqual(captado["true_cfg"], 4.0); self.assertEqual(captado["steps"], 40)
+        self.assertEqual(captado["negative_prompt"], " ")
+        self.assertEqual([j["id"] for j in captado["jobs"]], ["v1_frente", "v1_lado"])
+        self.assertEqual((captado["width"], captado["height"]), (1328, 1328))
+
+    def test_hoja_detalle(self):
+        from PIL import Image
+        d = tempfile.mkdtemp()
+        for n in ("frente", "lado"):
+            imagen(os.path.join(d, f"v1_{n}.png"), tam=(300, 300))
+        base = {n: os.path.join(d, f"v1_{n}.png") for n in ("frente", "lado")}
+        im = Image.open(C.hoja_concepto(d, 1, os.path.join(d, "h.jpg"), base=base, cuadrada=True, vistas=["frente", "lado"]))
+        self.assertLessEqual(im.width, 1000); self.assertGreater(im.width, 950)
+
+
 class Archivos(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
