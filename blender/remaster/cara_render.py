@@ -1,9 +1,9 @@
 """cara_render.py -- render ortografico de frente de una cabeza (para detectar landmarks 2D) de un glTF o de la base MakeHuman.
 
-    blender -b -P cara_render.py -- (--glb cabeza.glb | --base [--cache DIR]) --salida img.png --centro x,y,z --escala m [--res 1024]
+    blender -b -P cara_render.py -- (--glb cabeza.glb | --blend f.blend | --base [--cache DIR]) --salida img.png --centro x,y,z --escala m [--res 1024]
 
 Camara ortografica mirando a +Y desde -Y (el frente en Blender), centrada en `--centro` (metros), `--escala` = ancho visible en metros.
-El glTF se renderiza con su textura (Workbench, luz plana). La base MakeHuman, en tono piel con sus ojos (la textura de ojos de la
+El glTF (o un .blend, con sus materiales y texturas) se renderiza con su textura (Workbench, luz plana). La base MakeHuman, en tono piel con sus ojos (la textura de ojos de la
 cache). Escribe img.png e img.json con {centro, escala, res} (lo que hace falta para llevar pixeles 2D a rayos 3D)."""
 import json
 import math
@@ -27,10 +27,13 @@ salida = arg("--salida")
 res = int(arg("--res", "1024"))
 centro = [float(x) for x in arg("--centro", "0,0,0").split(",")]
 escala = float(arg("--escala", "0.5"))
-if not salida or not (arg("--glb") or "--base" in a):
-    sys.exit("uso: --glb f.glb | --base  --salida img.png --centro x,y,z --escala m")
+if not salida or not (arg("--glb") or arg("--blend") or "--base" in a):
+    sys.exit("uso: --glb f.glb | --blend f.blend | --base  --salida img.png --centro x,y,z --escala m")
 
-bpy.ops.wm.read_factory_settings(use_empty=True)
+if arg("--blend"):
+    bpy.ops.wm.open_mainfile(filepath=arg("--blend"))
+else:
+    bpy.ops.wm.read_factory_settings(use_empty=True)
 sc = bpy.context.scene
 sc.render.engine = "BLENDER_WORKBENCH"
 sc.render.resolution_x = sc.render.resolution_y = res
@@ -40,7 +43,9 @@ sh.color_type = "TEXTURE"
 sc.world = bpy.data.worlds.new("w")
 sc.world.color = (0.5, 0.5, 0.5)
 
-if arg("--glb"):
+if arg("--blend"):
+    pass
+elif arg("--glb"):
     bpy.ops.import_scene.gltf(filepath=arg("--glb"))
 else:
     from assets_makehuman import asegurar

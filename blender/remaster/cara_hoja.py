@@ -91,3 +91,61 @@ def hoja(sc, ob_gen, ob_cara, ojos, ctr, ancho, salida, centros_ojos, tam=336, s
     for m in orig_cara:
         ob_cara.data.materials.append(m)
     print("HOJA", salida, W, H)
+
+
+def hoja_unida(sc, ob_cabeza, ojos, ctr, ancho, salida, centros_ojos, tam=336, ss=2):
+    """Hoja de la cabeza unida (3 columnas x 2 filas, Workbench, gris con cavidades; los ojos conservan su textura).
+    Fila 1: frente, 3/4 derecho, perfil. Fila 2: 3/4 izquierdo, primer plano de los ojos de frente y de 3/4."""
+    gris = _mat("hoja_gris", (0.72, 0.72, 0.72, 1))
+    orig = [s.material for s in ob_cabeza.material_slots]
+    for s in ob_cabeza.material_slots:
+        s.material = gris
+    sc.render.engine = "BLENDER_WORKBENCH"
+    sc.render.resolution_x = sc.render.resolution_y = tam * ss
+    sc.render.film_transparent = False
+    sh = sc.display.shading
+    sh.light = "STUDIO"
+    sh.color_type = "TEXTURE"
+    sh.show_cavity = True
+    sh.cavity_type = "BOTH"
+    sh.show_specular_highlight = False
+    sc.world = bpy.data.worlds.new("hoja_w")
+    sc.world.color = (0.45, 0.45, 0.45)
+    cam = bpy.data.objects.new("hoja_cam", bpy.data.cameras.new("hoja_cam"))
+    sc.collection.objects.link(cam)
+    sc.camera = cam
+    cam.data.type = "ORTHO"
+    cam.data.clip_end = 100
+    ctr = Vector(ctr)
+    centro_ojos = (Vector(centros_ojos[0]) + Vector(centros_ojos[1])) / 2
+    vistas = [("frente", 0, ctr, 1.5 * ancho), ("tres_cuartos_der", 35, ctr, 1.5 * ancho), ("perfil", 90, ctr, 1.5 * ancho),
+              ("tres_cuartos_izq", -35, ctr, 1.5 * ancho), ("ojos", 0, centro_ojos, 0.62 * ancho),
+              ("ojos_3_4", 40, centro_ojos, 0.62 * ancho)]
+    tmp = tempfile.mkdtemp()
+    tiles = []
+    for nom, az, tgt, esc in vistas:
+        cam.data.ortho_scale = esc
+        t = math.radians(az)
+        cam.location = tgt + Vector((math.sin(t) * 3, -math.cos(t) * 3, 0))
+        cam.rotation_euler = (tgt - cam.location).to_track_quat("-Z", "Y").to_euler()
+        ruta = os.path.join(tmp, nom + ".png")
+        sc.render.filepath = ruta
+        bpy.ops.render.render(write_still=True)
+        im = bpy.data.images.load(ruta)
+        w, h = im.size
+        px = np.array(im.pixels[:], dtype=np.float32).reshape(h, w, 4)[::-1, :, :3]
+        tiles.append(px.reshape(tam, ss, tam, ss, 3).mean(axis=(1, 3)))
+        bpy.data.images.remove(im)
+    mosaico = np.vstack([np.hstack(tiles[:3]), np.hstack(tiles[3:])])
+    H, W = mosaico.shape[:2]
+    out = np.ones((H, W, 4), dtype=np.float32)
+    out[..., :3] = mosaico[::-1]
+    im = bpy.data.images.new("hoja", W, H)
+    im.pixels.foreach_set(out.reshape(-1))
+    im.file_format = "JPEG"
+    im.filepath_raw = salida
+    im.save()
+    bpy.data.images.remove(im)
+    for s, m in zip(ob_cabeza.material_slots, orig):
+        s.material = m
+    print("HOJA", salida, W, H)

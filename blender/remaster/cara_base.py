@@ -48,8 +48,7 @@ LAM = float(arg("--rbf-lambda", "0.002"))
 # ---- indices MediaPipe (478 puntos; "der/izq" del sujeto) -------------------------------------------------------------------------
 OJO_ESQ = dict(ext=33, int=133, iris=468, sup=159, inf=145)       # ojo a la izquierda de la imagen (derecho del sujeto)
 OJO_DCH = dict(ext=263, int=362, iris=473, sup=386, inf=374)
-OVALO = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172,
-         58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109]
+OVALO = C.OVALO
 AJUSTE = [33, 133, 263, 362, 468, 473,                       # comisuras y centro de iris
           107, 336, 105, 334,                                # cejas (interior y centro)
           6, 168, 195, 5, 1, 2, 98, 327, 129, 358, 49, 279,  # nariz: puente, punta, base, aletas
