@@ -1,4 +1,4 @@
-"""assetgen: comando unico. Subcomandos: imagenes, construir, 3d, rig, estado, gasto, limpiar."""
+"""assetgen: comando unico. Subcomandos: imagenes, construir, remaster, 3d, rig, estado, gasto, limpiar."""
 import argparse, glob, json, os, shutil, sys, tempfile, time
 
 from . import runpod as rp
@@ -6,6 +6,7 @@ from .presets import *
 from .sesion import Sesion, Abortado, log
 from . import globalcfg
 from .pipeline import cmd_imagenes, cmd_construir
+from .remaster import cmd_remaster
 from .comun import _candidatas, _estimar, _revisar_presupuesto
 
 RAIZ_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -315,6 +316,24 @@ def main(argv=None):
     pc.add_argument("--preset", choices=PRESETS_TODOS, help="boceto|medio|alto|aaa (def.: el del yaml). alto = 3D en calidad + quads 20k + normal map; aaa reservado")
     pc.add_argument("--seco", action="store_true", help="solo valida config, entradas y tope mensual y muestra el plan; no enciende nada ni escribe salida")
     comunes(pc); pc.set_defaults(fn=cmd_construir)
+
+    prm = sub.add_parser("remaster", help="modo remaster agnostico (local): analizar un modelo original -> restricciones.yaml + renders de referencia")
+    rsub = prm.add_subparsers(dest="rcmd", required=True)
+    pa = rsub.add_parser("analizar", help="original (glb/gltf/fbx/3dmigoto) -> restricciones.yaml, renders (frente/lado/espalda) y vistas.jpg; sin GPU ni costo")
+    pa.add_argument("--original", required=True, help="archivo (.glb/.gltf/.fbx/.vb) o carpeta (piezas .vb/.ib)")
+    pa.add_argument("--formato", choices=["auto", "gltf", "fbx", "3dmigoto"], default="auto")
+    pa.add_argument("--layout", help="3dmigoto: yaml con el formato del vertice (ver ejemplos/layout_3dmigoto.yaml)")
+    pa.add_argument("--salida", required=True, help="carpeta de salida (restricciones.yaml, renders/, vistas.jpg, medidas.json)")
+    pa.add_argument("--esqueleto", help="esqueleto aparte (glb/gltf/fbx o json/yaml con huesos) si el original no lo trae")
+    pa.add_argument("--paletas", help="3dmigoto: json/yaml {pieza: [hueso global por slot local]}")
+    pa.add_argument("--pose", help="3dmigoto: matrices por hueso global de una pose de reposo, 'archivo.json#clave' (12 floats: 3 columnas + origen)")
+    pa.add_argument("--texturas", help="3dmigoto: imagen o carpeta con las texturas del original (se registran sus resoluciones en el yaml)")
+    pa.add_argument("--textura-render", help="3dmigoto: imagen para pintar el render (debe corresponder a las UV de las piezas; si no, el render sale en gris)")
+    pa.add_argument("--arriba", help="eje arriba del archivo (+x|-x|+y|-y|+z|-z); por defecto el del layout o inferido")
+    pa.add_argument("--frente", help="eje hacia donde mira el personaje; por defecto el del layout o inferido por los pies")
+    pa.add_argument("--tam", type=int, default=1024, help="lado de los renders en px (def. 1024)")
+    pa.add_argument("--sin-renders", action="store_true", help="solo restricciones.yaml")
+    pa.set_defaults(fn=cmd_remaster)
 
     sub.add_parser("gasto", help="gasto del mes (todos los proyectos) y tope mensual").set_defaults(fn=cmd_gasto)
     sub.add_parser("estado", help="pods de assetgen encendidos y gasto por hora").set_defaults(fn=cmd_estado)

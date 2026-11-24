@@ -1,0 +1,17 @@
+# Ejemplo de layout para `assetgen remaster analizar --formato 3dmigoto --layout ...`
+# Describe el vertice de los .vb volcados por 3DMigoto. Este ejemplo es el de un personaje con piel y 52 bytes por vertice.
+#
+# atributos: "<n><tipo>[n] <nombre>, ..." en el orden del buffer.
+#   tipos: f float32, h int16, H uint16, b int8, B uint8, i int32, I uint32, e half; un sufijo "n" lo normaliza (p. ej. 4Bn = bytes/255).
+#   nombres: p (posicion), n (normal), huesos, pesos, uv, uv1.., color, tangente.
+atributos: "3f p, 3f n, 4h huesos, 3f pesos, 2f uv"
+stride: 52              # opcional: se comprueba contra la suma de los atributos
+indices: uint16         # tipo de los .ib: uint16 | uint32 | auto
+orden_bytes: little
+# Los indices de hueso del buffer son registros de la paleta de constantes de la pieza (0, 3, 6, ...): slot local = valor / divisor.
+huesos_divisor: 3
+# Ejes del juego (opcionales): hacia donde es "arriba" y hacia donde mira el personaje. Si faltan se infieren (inferido, revisalo).
+ejes:
+  arriba: +y
+  frente: +z
+unidades: m

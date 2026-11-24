@@ -215,3 +215,27 @@ Frente a e2e3 (A6000, 4 pods, arranque 154 + 147 + 279 + 314 = 894 s, $0.454 con
 El arranque por pod no baja (imagen: 264 s vs ~150 s, mismo tamano de capas propias, otro host; 3d: 387 s para 7.9 GB propios frente a 279-314 s para 3.5 y 4.3 GB), lo que
 ahorra tiempo es no repetir pods. La A40 es mas lenta que la A6000 en 3D (481 s para 2 assets). Resultado: barril 47k caras sin clips; velador con 5 clips Quaternius, 22 huesos, 48k caras
 (hojas en `pruebas4/e2e4/hoja_imagenes.jpg` y `hoja_resultado.jpg`).
+
+## Modo remaster (agnostico): `assetgen remaster analizar` (paso 1 de la fase 5)
+
+Local, sin GPU y sin costo. Lee un modelo **original** (el que el remake debe reemplazar) y escribe en `--salida`:
+`restricciones.yaml` (todo lo medible del archivo, cada valor con su origen `medido`/`inferido`/`manual`, y una seccion `motor:` para los limites
+que no se ven en el archivo), `renders/{frente,lado,espalda}.png` (1024 px, ortograficos, misma escala, fondo gris), `vistas.jpg` (3 x 333 px,
+entrada del editor de imagenes del paso 2) y `medidas.json` (lo medido sin interpretar).
+
+```bash
+assetgen remaster analizar --original modelo.glb --salida analisis/                 # glb/gltf (lector propio) o fbx (via Blender)
+assetgen remaster analizar --original piezas_vb_ib/ --layout layout.yaml \          # 3dmigoto: .vb/.ib + layout del vertice
+    [--paletas p.json] [--pose datos.json#poses.A] [--esqueleto esq.json|esq.glb] [--texturas img] [--textura-render img] \
+    [--arriba +y] [--frente +z] --salida analisis/
+```
+
+- Extrae: esqueleto (nombres, jerarquia, reposo), maximo de pesos por vertice, vertices/triangulos y huesos usados por pieza, numero de piezas, tipo de indice
+  y maximo de vertices por pieza implicito (uint16 -> 65535), altura/ancho/profundidad, eje arriba y frente, materiales/texturas (resolucion), canales de UV.
+- Adaptadores: `remaster_gltf.py` (glb/gltf nativo: conteos exactos de GPU, skins, tipo de indice), `blender/remaster/medir_blender.py` (fbx), `remaster_3dmigoto.py`
+  (`.vb/.ib` con `layout.yaml`, ver `ejemplos/layout_3dmigoto.yaml`). Un 3DMigoto no trae esqueleto: los huesos del buffer son indices locales a la paleta de cada
+  pieza; con `--paletas` (pieza -> huesos globales) se pasan a globales, con `--pose` (matriz por hueso global) se ensambla el cuerpo (skinning lineal) y con
+  `--esqueleto` se aporta la jerarquia (el yaml lo marca `manual`).
+- Los ejes salen del layout/linea de comandos (`manual`) o se infieren (`inferido`): arriba = +y en glTF/fbx; frente = hacia donde sobresalen los pies. Revisa `vistas.jpg`.
+- Los renders muestran la pose que tenga el archivo (no necesariamente un reposo/A-pose).
+- Pruebas: `cli/tests/test_remaster.py` (datos sinteticos, sin Blender).
