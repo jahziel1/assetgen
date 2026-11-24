@@ -1,7 +1,8 @@
 # TRELLIS.2 (microsoft/TRELLIS.2) - imagen sin pesos. Receta: recetas/trellis2.sh (torch 2.6.0+cu124, transformers 4.56.2).
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
-ARG MAX_JOBS=4
+# MAX_JOBS=2: con 4 el runner (16 GB) perdio comunicacion durante la compilacion de las extensiones CUDA
+ARG MAX_JOBS=2
 ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/usr/local/cuda/bin:$PATH CUDA_HOME=/usr/local/cuda \
     TORCH_CUDA_ARCH_LIST="8.6;8.9;9.0" FORCE_CUDA=1 MAX_JOBS=${MAX_JOBS} \
@@ -25,7 +26,7 @@ RUN set -eux; pip install uv; \
     git clone -q --depth 1 --recursive https://github.com/JeffreyXiang/CuMesh.git; \
     git clone -q --depth 1 --recursive https://github.com/JeffreyXiang/FlexGEMM.git; \
     cp -r /root/trellis2/o-voxel o-voxel; \
-    for d in nvdiffrast nvdiffrec CuMesh FlexGEMM o-voxel; do uv pip install ./$d --no-build-isolation; done; \
+    for d in nvdiffrast nvdiffrec CuMesh FlexGEMM o-voxel; do echo "== build $d $(date +%T)"; free -m | sed -n 2p; uv pip install ./$d --no-build-isolation; done; \
     mkdir -p /opt/assetgen/licenses; cp /root/trellis2/LICENSE /opt/assetgen/licenses/TRELLIS.2.LICENSE || true; \
     cp /root/ext/nvdiffrast/LICENSE.txt /opt/assetgen/licenses/nvdiffrast.LICENSE || true; \
     rm -rf /root/ext /root/trellis2/.git /root/.cache /tmp/* /var/tmp/*; \
