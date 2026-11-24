@@ -2,7 +2,8 @@
 
     python3 cara_pipeline.py --glb cabeza.glb --retrato frente.png --salida DIR --centro-gen x,y,z --escala-gen m
         [--blender /ruta/Blender] [--venv-python /ruta/venv/bin/python] [--cache DIR] [extra de cara_base.py ...]
-        [--unir [--retrato-ap frente_nitido.png] [--margen-borde 0.04]]
+        [--unir [--retrato-ap frente_nitido.png] [--margen-borde 0.04] [--globo-adelanto 1.0] [--tex 2048]]
+        [--textura --retrato-color frente.png --retrato-detalle frente_nitido.png]
 
 Pasos: (1) asegura los assets CC0 de MakeHuman en la cache (assets_makehuman.py); (2) render ortografico de frente de la cabeza generada
 (centrado en --centro-gen, ancho visible --escala-gen, metros, Z arriba, frente en -Y) y de la base MakeHuman (cara_render.py);
@@ -11,7 +12,13 @@ ojos, glb, blend, landmarks.json, hoja_cara.jpg). Los intermedios quedan en DIR/
 
 Etapa 2 opcional (`--unir`, cara_unir.py): (5) limpia la cara, calibra la apertura de los parpados (mide con MediaPipe la apertura de cada ojo en
 el retrato --retrato-ap, o en --retrato si falta, y en un render de la cara limpia; ajusta el factor de cada ojo por secante hasta +-3 %, max.
-4 pasadas) y (6) une la cara a la cabeza (UV propias, cara_tex, cabeza_unida.blend/.glb, hoja_unida.jpg)."""
+4 pasadas; los globos se adelantan --globo-adelanto del hueco que los separa de los parpados, 1.0 = hasta dejar el borde del parpado a 1.6 mm)
+y (6) une la cara a la cabeza (UV propias, cara_tex, cabeza_unida.blend/.glb, hoja_unida.jpg).
+
+Etapa 3 opcional (`--textura`, necesita --unir; cara_textura.py en Blender + cara_textura_img.py en el venv): (7) extrae los texeles UV de la
+cara y los landmarks 3D de la cara unida; (8) alinea los retratos (camara afin + TPS 2D sobre landmarks MediaPipe), lleva el color del
+--retrato-color a la piel de la cabeza en Lab, suma la alta frecuencia del --retrato-detalle y funde con la textura de la cabeza en el borde;
+(9) aplica cara_tex.png, da brillo humedo a los ojos y escribe cabeza_final.blend/.glb y hoja_final.jpg."""
 import argparse
 import os
 import subprocess
@@ -76,6 +83,12 @@ if __name__ == "__main__":
     ap.add_argument("--unir", action="store_true", help="etapa 2: limpiar, calibrar parpados, unir a la cabeza (cara_unir.py)")
     ap.add_argument("--retrato-ap", help="retrato nitido de frente para medir la apertura de los ojos (por defecto, --retrato)")
     ap.add_argument("--margen-borde", default="0.04", help="el contorno de la cara queda esta fraccion del ancho dentro del ovalo MediaPipe")
+    ap.add_argument("--globo-adelanto", default="1.0", help="fraccion del hueco globo-parpados que se adelanta el globo (0 = no mover)")
+    ap.add_argument("--tex", default="2048", help="lado (px) de cara_tex")
+    ap.add_argument("--textura", action="store_true", help="etapa 3: hornea el retrato en cara_tex y escribe cabeza_final.* (necesita --unir)")
+    ap.add_argument("--retrato-color", help="retrato (color correcto, aunque blando) para el color de la cara; por defecto --retrato")
+    ap.add_argument("--retrato-detalle", help="retrato nitido (misma composicion) del que solo se toma la alta frecuencia; por defecto --retrato-ap")
+    ap.add_argument("--sigma-detalle", default="1.6")
     ap.add_argument("--sin-hoja", action="store_true")
     a, extra = ap.parse_known_args()
     w = os.path.join(a.salida, "_trabajo")
@@ -101,7 +114,26 @@ if __name__ == "__main__":
             sys.exit("--unir necesita --retrato (o --retrato-ap) para medir la apertura de los ojos")
         correr(det + ["--img", ret, "--salida", os.path.join(w, "lm_retrato_ap.json")])
         objetivo = aperturas_mp(os.path.join(w, "lm_retrato_ap.json"))
-        f, med, hist = calibrar_apertura(a, w, det, render, objetivo, ["--margen-borde", a.margen_borde])
-        correr([a.blender, "-b", "-P", os.path.join(AQUI, "cara_unir.py"), "--", "--fase", "unir", "--dir", a.salida, "--glb", a.glb] +
+        f, med, hist = calibrar_apertura(a, w, det, render, objetivo, ["--margen-borde", a.margen_borde, "--globo-adelanto", a.globo_adelanto])
+        correr([a.blender, "-b", "-P", os.path.join(AQUI, "cara_unir.py"), "--", "--fase", "unir", "--dir", a.salida, "--glb", a.glb, "--tex", a.tex] +
                (["--sin-hoja"] if a.sin_hoja else []))
         json.dump(dict(objetivo=objetivo, medida_cara_limpia=med, factores=f, historial=hist), open(os.path.join(a.salida, "apertura_ojos.json"), "w"), indent=1)
+    if a.textura:
+        if not a.unir:
+            sys.exit("--textura necesita --unir")
+        rc, rd = a.retrato_color or a.retrato, a.retrato_detalle or a.retrato_ap
+        if not rc:
+            sys.exit("--textura necesita --retrato-color (o --retrato)")
+        tex = os.path.join(a.salida, "cara_tex.png")
+        correr(det + ["--img", rc, "--salida", os.path.join(w, "lm_color.json")])
+        img_cmd = [a.venv_python, os.path.join(AQUI, "cara_textura_img.py"), "--dir", a.salida, "--retrato-color", rc,
+                   "--lm-color", os.path.join(w, "lm_color.json"), "--salida", tex, "--sigma-detalle", a.sigma_detalle]
+        if rd:
+            correr(det + ["--img", rd, "--salida", os.path.join(w, "lm_detalle.json")])
+            img_cmd += ["--retrato-detalle", rd, "--lm-detalle", os.path.join(w, "lm_detalle.json")]
+        tx = [a.blender, "-b", "-P", os.path.join(AQUI, "cara_textura.py"), "--", "--dir", a.salida]
+        correr(tx + ["--fase", "extraer", "--tex", a.tex])
+        correr(img_cmd)
+        correr(tx + ["--fase", "aplicar", "--tex-png", tex])
+        if not a.sin_hoja:
+            correr(tx + ["--fase", "hoja", "--glb-antes", a.glb, "--retrato", rc])

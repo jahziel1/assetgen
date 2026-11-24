@@ -288,6 +288,35 @@ def fase_cara():
             phi = math.atan2(dz_, -dy_) - th * w            # el parpado gira alrededor del globo (conserva su distancia al centro)
             v.co.y = c[1] - rho * math.cos(phi)
             v.co.z = c[2] + rho * math.sin(phi)
+        # comisuras: al girar los parpados con la abertura casi cerrada, los vertices del borde del lagrimal y del canto externo saltan entre
+        # "superior" e "inferior" y forman picos (vueltas de >90 grados con segmentos de <1 mm). Taubin del lazo solo cerca de cada comisura
+        # (con peso que decae hacia el centro del ojo); el desplazamiento se reparte a los 2 anillos vecinos
+        Vc = coords(bm)
+        sm = np.array(G.lazo_taubin(Vc[lz].tolist(), 30))
+        dxc_l = {}
+        for k_, vi in enumerate(lz):
+            dxc = min(abs(Vc[vi][0] - x0), abs(Vc[vi][0] - x1))
+            dxc_l[vi] = G.suavizado(1.0 - dxc / (0.28 * W))
+            bm.verts[vi].co = Vector(Vc[vi] + dxc_l[vi] * (sm[k_] - Vc[vi]))
+        # la piel de alrededor (no el borde): Laplaciano uniforme de la malla con el mismo peso (decae con la distancia a la comisura)
+        zc_pts = {x0: np.mean([Vc[vi][2] for vi in lz if abs(Vc[vi][0] - x0) < 0.1 * W]), x1: np.mean([Vc[vi][2] for vi in lz if abs(Vc[vi][0] - x1) < 0.1 * W])}
+        pesos = {}
+        for v in bm.verts:
+            if v.index in proteg or v.index in otros:
+                continue
+            p_ = v.co
+            dd = min(math.hypot(p_[0] - xc_, p_[2] - zz_) for xc_, zz_ in zc_pts.items())
+            wv = float(G.suavizado(1.0 - dd / (0.4 * W)))
+            if wv > 0:
+                pesos[v.index] = wv
+        for _ in range(8):
+            nuevo_p = {}
+            for vi, wv in pesos.items():
+                v = bm.verts[vi]
+                vec = [e.other_vert(v).co for e in v.link_edges]
+                nuevo_p[vi] = v.co + 0.5 * wv * (sum(vec, Vector()) / len(vec) - v.co)
+            for vi, q in nuevo_p.items():
+                bm.verts[vi].co = q
         # que no atraviesen el globo: la distancia a la superficie REAL del globo (no a una esfera: el proxy de ojo no es esferico, su radio
         # varia de ~16 mm al frente a ~25 mm en el borde) debe ser >= 1.0 mm (1.6 mm en el borde del parpado); se saca hacia delante (-Y),
         # conservando x, z, para que la apertura no cambie
@@ -310,6 +339,21 @@ def fase_cara():
                 if np.linalg.norm(np.array(v.co[:]) - c) >= radio_globo(np.array(v.co[:])) + minimo:
                     break
                 v.co.y -= 0.0005
+
+        def empujar_fuera(v, minimo, pasos=8):
+            """saca el vertice de la piel del globo por la normal de la superficie mas cercana hasta que quede a `minimo` (distancia con signo)"""
+            for _ in range(pasos):
+                loc, nor, _ix, dd = bvh_ojo.find_nearest(v.co)
+                if loc is None:
+                    return
+                sd = dd if (v.co - loc).dot(nor) >= 0 else -dd
+                if sd >= minimo - 1e-5:
+                    return
+                v.co = v.co + nor * (minimo - sd + 1e-5)
+        if delta > 0:        # con el globo adelantado, su ecuador (que ya no queda dentro de la cuenca) no debe asomar por la piel de los lados
+            for v in bm.verts:
+                if np.linalg.norm(np.array(v.co[:]) - c) <= 1.7 * r:
+                    empujar_fuera(v, 0.0016 if v.index in proteg else 0.0010)
         # anillo extruido hacia el globo (grosor del borde del parpado): a `GROSOR`*1.6 mm tras el borde, sin pasar de la superficie del globo + 0.4 mm
         aristas = [e for e in bm.edges if e.is_boundary and e.verts[0].index in proteg and e.verts[1].index in proteg]
         ret = bmesh.ops.extrude_edge_only(bm, edges=aristas)
@@ -320,6 +364,8 @@ def fase_cara():
             dist = np.linalg.norm(vv)
             destino = max(radio_globo(np.array(v.co[:])) + 0.0004, dist - grosor)
             v.co = Vector(c + vv / dist * destino)
+            if delta > 0:
+                empujar_fuera(v, 0.0004)
         grosores[etiqueta] = grosor
         bm.verts.index_update()
         bm.verts.ensure_lookup_table()
@@ -465,6 +511,17 @@ def elegir_uv(bm_cara):
         cand["mezcla%.2f" % w] = normalizar_uv(w * cand["frontal"] + (1 - w) * cand["conforme"])
     tabla = {n: G.distorsion_uv(P.tolist(), uv.tolist(), nucleo) for n, uv in cand.items()}
     puntaje = {n: 0.5 * (t["aniso_p90"] - 1.0) + t["area_desv"] + 10.0 * t["invertidos"] / max(t["n"], 1) for n, t in tabla.items()}
+    # el desenvuelto de Blender a veces deja vertices sueltos (flanco, paredes de los parpados) lejos de la isla: como la normalizacion usa la
+    # caja, el resto de la isla se encoge. Se descartan los candidatos con una arista UV >15 veces la mediana.
+    tri_np = np.array(tri)
+    for n, uv in cand.items():
+        e = np.linalg.norm(uv[tri_np] - uv[np.roll(tri_np, 1, axis=1)], axis=2).ravel()
+        razon = e.max() / max(np.median(e), 1e-9)
+        if razon > 15.0:
+            puntaje[n] += 100.0
+            print("UV %-11s descartada: arista UV maxima %.3f = %.0f x la mediana" % (n, e.max(), razon))
+        else:
+            print("UV %-11s arista UV maxima %.0f x la mediana" % (n, razon))
     mejor = min(puntaje, key=puntaje.get)
     for n, t in tabla.items():
         print("UV %-11s aniso media %.3f p90 %.3f area_desv %.3f invertidos %d de %d%s" %
