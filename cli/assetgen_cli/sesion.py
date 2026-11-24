@@ -9,6 +9,10 @@ class Abortado(RuntimeError):
     pass
 
 
+MAX_FALLOS_SEGUIDOS = 2     # pods seguidos que no arrancan: el CLI se detiene y avisa en vez de seguir probando GPUs
+SONDEO_S = 6                # cada cuantos segundos se consulta `pod get` mientras el pod arranca
+
+
 def log(msg):
     print(f"[assetgen {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
@@ -37,6 +41,7 @@ class Sesion:
         self.precio_h = 0.0
         self.t_crear = None
         self.hitos = {}
+        self._motivo = self._estado_final = ""
         self.intentos = []          # pods creados y borrados que no llegaron a SSH (cuentan para el costo)
         self._proc = None
         self._abort = threading.Event()
@@ -90,6 +95,7 @@ class Sesion:
     # ---- arranque con reintento por GPU ----
     def _arrancar(self):
         errores = []
+        fallos_seguidos = 0
         for gid, nombre, precio, nube in self.candidatas:
             if self._abort.is_set():
                 raise Abortado("abortado")
@@ -98,61 +104,83 @@ class Sesion:
             self.gpu, self.precio_h = nombre, precio
             self.t_crear = time.time()
             self.pod_id = None
+            self.hitos = {}
+            self._motivo = ""
             try:
                 self.pod_id = rp.create_pod(name, self.imagen, gid, self.disco_gb, nube)
             except rp.RunpodError as e:
                 errores.append(f"{nombre}: {e}"); log(f"sin pod en {nombre}: {str(e)[:160]}")
+                self.intentos.append({"pod_id": None, "gpu": nombre, "precio_h": precio, "segundos": 0, "costo": 0.0,
+                                      "resultado": "sin_pod", "error": str(e)[:200], "borrado": True})
                 self.t_crear = None
                 continue
-            log(f"pod {self.pod_id} creado; esperando SSH (max {self.espera_ssh // 60} min)")
+            log(f"pod {self.pod_id} creado; esperando que arranque (max {self.espera_ssh // 60} min)")
             self._lanzar_watchdog_local()
             if self._esperar_ssh():
                 self.hitos["ssh_listo"] = round(time.time() - self.t_crear, 1)
-                log(f"SSH listo en {self.hitos['ssh_listo']} s ({self.host}:{self.port})")
+                log(f"SSH listo en {self.hitos['ssh_listo']} s ({self.host}:{self.port}, fuente: {self.hitos.get('fuente_listo')})")
                 self._instalar_seguridad()
                 return
             # no hubo SSH: borrar y probar la siguiente GPU
-            errores.append(f"{nombre}: sin SSH en {self.espera_ssh}s o pod en error")
-            log(f"sin SSH en {nombre} (limite {self.espera_ssh // 60} min o error); borrando pod y reintentando con otra GPU")
-            self._borrar_y_registrar_intento()
+            fallos_seguidos += 1
+            errores.append(f"{nombre}: {self._motivo or 'sin SSH'}")
+            log(f"sin SSH en {nombre} ({self._motivo or 'limite de ' + str(self.espera_ssh // 60) + ' min'}); borrando el pod")
+            self._borrar_y_registrar_intento("sin_ssh")
+            if fallos_seguidos >= MAX_FALLOS_SEGUIDOS:
+                raise rp.RunpodError(
+                    f"{fallos_seguidos} pods seguidos no arrancaron (limite {self.espera_ssh // 60} min cada uno): " + " | ".join(errores)
+                    + ". Me detengo para no seguir gastando; revisa la imagen/RunPod y vuelve a intentar (cada intento quedo en costos.jsonl).")
         raise rp.RunpodError("no se pudo arrancar ningun pod: " + " | ".join(errores))
 
+    def _probar_ssh(self):
+        """Intento de conexion real: ssh -o ConnectTimeout=5 ... true. True si el pod ya acepta SSH."""
+        try:
+            r = subprocess.run(self._ssh_base(conectar=5) + ["true"], capture_output=True, timeout=25)
+            return r.returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
+
     def _esperar_ssh(self):
-        """Espera SSH hasta `espera_ssh` s. Mientras el pod siga 'initializing' (descarga de imagen) NO se rinde antes del limite;
-        solo falla antes si el pod entra en error o desaparece."""
+        """Espera hasta `espera_ssh` s. Fuente principal de "listo": `pod get` (estado + ssh.ip/ssh.port) y un intento real de conexion
+        SSH al puerto. `ssh info` solo se consulta como respaldo cuando `pod get` aun no trae ssh.ip/port. Mientras el pod siga
+        arrancando (descarga de imagen) no se rinde antes del limite; solo antes si el pod entra en error o desaparece."""
         limite = self.t_crear + self.espera_ssh
         ultimo = None
         while time.time() < limite:
             if self._abort.is_set():
                 raise Abortado("abortado")
-            st = rp.pod_status(self.pod_id)
+            st, ep, up = rp.instantanea(self.pod_id)
+            self._estado_final = st
             if st != ultimo:
                 log(f"pod {self.pod_id}: estado {st} (+{time.time() - self.t_crear:.0f} s)")
                 ultimo = st
-                if st == "running":
-                    self.hitos["contenedor_running"] = round(time.time() - self.t_crear, 1)
+            if (st == "running" or up > 0) and "contenedor_running" not in self.hitos:
+                self.hitos["contenedor_running"] = round(time.time() - self.t_crear, 1)
             if st in ("error", "terminated", "stopped", "exited", "gone"):
+                self._motivo = f"el pod paso a estado {st}"
                 log(f"pod en estado {st}: se descarta")
                 return False
-            if st == "running":
-                ep = rp.ssh_endpoint(self.pod_id)
-                if ep:
-                    self.host, self.port = ep
-                    try:
-                        r = subprocess.run(self._ssh_base() + ["true"], capture_output=True, timeout=40)
-                        if r.returncode == 0:
-                            return True
-                    except subprocess.TimeoutExpired:
-                        pass
-            time.sleep(10)
+            fuente = "pod_get"
+            if ep is None and (st == "running" or up > 0):
+                ep = rp.ssh_endpoint(self.pod_id)      # respaldo
+                fuente = "ssh_info"
+            if ep:
+                self.host, self.port = ep
+                self.hitos.setdefault("ssh_endpoint", round(time.time() - self.t_crear, 1))
+                if self._probar_ssh():
+                    self.hitos["fuente_listo"] = fuente
+                    return True
+            time.sleep(SONDEO_S)
+        self._motivo = f"sin SSH tras {self.espera_ssh // 60} min (ultimo estado {self._estado_final})"
         return False
 
-    def _borrar_y_registrar_intento(self):
+    def _borrar_y_registrar_intento(self, resultado):
         self._parar_watchdog_local()
         seg = time.time() - self.t_crear
         ok = rp.delete_pod(self.pod_id)
         self.intentos.append({"pod_id": self.pod_id, "gpu": self.gpu, "precio_h": self.precio_h,
-                              "segundos": round(seg, 1), "costo": round(seg / 3600 * self.precio_h, 4), "borrado": ok})
+                              "segundos": round(seg, 1), "costo": round(seg / 3600 * self.precio_h, 4), "borrado": ok,
+                              "resultado": resultado, "motivo": self._motivo, "estado_final": self._estado_final, "hitos": dict(self.hitos)})
         self.pod_id = None
 
     # ---- watchdog local (respaldo si este proceso muere con SIGKILL) ----
@@ -178,10 +206,10 @@ class Sesion:
             log("AVISO: no se pudo armar el apagado dentro del pod; queda el local")
 
     # ---- SSH ----
-    def _ssh_base(self):
+    def _ssh_base(self, conectar=15):
         return ["ssh", "-i", rp.SSH_KEY, "-p", str(self.port), "-o", "StrictHostKeyChecking=no",
                 "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR", "-o", "IdentitiesOnly=yes",
-                "-o", "ConnectTimeout=15", "-o", "ServerAliveInterval=20", "-o", "ServerAliveCountMax=9",
+                "-o", f"ConnectTimeout={conectar}", "-o", "ServerAliveInterval=20", "-o", "ServerAliveCountMax=9",
                 f"root@{self.host}"]
 
     def ssh(self, cmd, check=True, stdin=None, capture=False):
@@ -241,7 +269,8 @@ class Sesion:
                 self.hitos["segundos_pod"] = round(seg, 1)
                 self.intentos.append({"pod_id": self.pod_id, "gpu": self.gpu, "precio_h": self.precio_h,
                                       "segundos": round(seg, 1), "costo": round(seg / 3600 * self.precio_h, 4), "borrado": borrado,
-                                      "hitos": self.hitos})
+                                      "resultado": "ok" if "ssh_listo" in self.hitos else "interrumpido",
+                                      "estado_final": self._estado_final, "hitos": self.hitos})
                 log(f"pod {self.pod_id} " + ("BORRADO" if borrado else "NO SE PUDO BORRAR: ejecuta `assetgen limpiar`"))
                 self.pod_id = None
             self._registrar_costo()

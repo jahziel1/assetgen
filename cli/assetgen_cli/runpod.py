@@ -101,16 +101,57 @@ def delete_pod(pod_id, reintentos=4):
     return False
 
 
+def pod_get(pod_id):
+    """JSON de `pod get` (dict) o None si el comando fallo (puede ser transitorio)."""
+    js = _json(ctl("pod", "get", pod_id, check=False).stdout)
+    if isinstance(js, list):
+        js = js[0] if js else None
+    return js if isinstance(js, dict) else None
+
+
+def estado_de(js):
+    """runtimeStatus normalizado (running|initializing|error|...) a partir del JSON de `pod get`."""
+    st = (js.get("runtimeStatus") or "").lower()
+    if not st or st == "unknown":
+        d = (js.get("desiredStatus") or "").lower()
+        st = {"running": "initializing", "exited": "exited", "terminated": "terminated"}.get(d, st or "unknown")
+    return st
+
+
+def ssh_de_get(js):
+    """(ip, puerto) que reporta `pod get` en ssh.ip / ssh.port, o None."""
+    s = js.get("ssh") if isinstance(js, dict) else None
+    if isinstance(s, dict) and s.get("ip") and s.get("port"):
+        try:
+            return str(s["ip"]), int(s["port"])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def instantanea(pod_id):
+    """Una sola consulta `pod get`: (estado, endpoint_ssh|None, uptime_s). Estado 'gone' si el pod ya no existe, 'unknown' si la API fallo."""
+    js = pod_get(pod_id)
+    if js is None:
+        try:   # puede ser un fallo transitorio de la API: confirmar con la lista
+            if not any(x.get("id") == pod_id for x in list_pods(solo_assetgen=False)):
+                return "gone", None, 0
+        except RunpodError:
+            pass
+        return "unknown", None, 0
+    try:
+        up = int(js.get("uptimeSeconds") or (js.get("runtime") or {}).get("uptimeInSeconds") or 0)
+    except (TypeError, ValueError):
+        up = 0
+    return estado_de(js), ssh_de_get(js), up
+
+
 def ssh_endpoint(pod_id):
-    """(host, puerto) directo por IP publica, o None si aun no esta."""
+    """RESPALDO: (host, puerto) segun `runpodctl ssh info`, o None. Esta orden puede quedarse en 'not ready' aunque el pod ya corra:
+    la fuente principal es `pod get` (ver `instantanea`)."""
     p = ctl("ssh", "info", pod_id, check=False)
     js = _json(p.stdout)
     if p.returncode != 0 or not isinstance(js, dict) or js.get("error"):
-        # respaldo: 'pod get' trae ssh.ip / ssh.port cuando el contenedor ya reporto
-        g = _json(ctl("pod", "get", pod_id, check=False).stdout)
-        s = (g or {}).get("ssh") if isinstance(g, dict) else None
-        if isinstance(s, dict) and s.get("ip") and s.get("port"):
-            return str(s["ip"]), int(s["port"])
         return None
     if js.get("ip") and js.get("port"):
         return str(js["ip"]), int(js["port"])
@@ -124,23 +165,7 @@ def ssh_endpoint(pod_id):
 
 def pod_status(pod_id):
     """runtimeStatus del pod (running|initializing|error|...) o 'gone' si ya no existe."""
-    p = ctl("pod", "get", pod_id, check=False)
-    js = _json(p.stdout)
-    if isinstance(js, list):
-        js = js[0] if js else None
-    if not isinstance(js, dict):
-        # puede ser un fallo transitorio de la API: confirmar con la lista
-        try:
-            if not any(x.get("id") == pod_id for x in list_pods(solo_assetgen=False)):
-                return "gone"
-        except RunpodError:
-            pass
-        return "unknown"
-    st = (js.get("runtimeStatus") or "").lower()
-    if not st or st == "unknown":
-        d = (js.get("desiredStatus") or "").lower()
-        st = {"running": "initializing", "exited": "exited", "terminated": "terminated"}.get(d, st or "unknown")
-    return st
+    return instantanea(pod_id)[0]
 
 
 def costo_hora(pod):

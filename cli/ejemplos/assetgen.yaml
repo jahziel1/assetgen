@@ -6,6 +6,7 @@ camara: lejana         # lejana (RTS) | tercera-persona | primer-plano
 presupuesto_poligonos: 50000
 gpu_modo: normal       # normal | rapido
 variantes: 4           # variantes de imagen por asset
+modelo_imagen: qwen    # qwen (1328 px) | zimage (1536 px, admite pose); tambien por asset. Si se mezclan, un pod por modelo
 
 # tipo: humanoide  -> imagen en A-pose, rig (Puppeteer) y retarget de clips Quaternius UAL1 (Idle/Walk/Run/Sword_Attack/Death)
 #       mecanico   -> sin rig; animar_mecanico.py con 'plantilla': vehiculo | catapulta | rotor
@@ -14,6 +15,8 @@ variantes: 4           # variantes de imagen por asset
 assets:
   - nombre: soldado
     tipo: humanoide
+    modelo_imagen: zimage              # opcional: este asset con Z-Image
+    pose: a                            # a (def. en humanoides: ControlNet de pose A, solo zimage) | libre
     prompt: "roman legionary soldier with red tunic and helmet, sword at the belt"
   - nombre: catapulta
     tipo: mecanico

@@ -24,7 +24,7 @@ El CLI sube `scripts/run_trellis2.py` del repo al pod, asi que no hace falta rec
 ## Pipeline completo (yaml -> final/<asset>.glb)
 
 ```bash
-assetgen imagenes  --config assetgen.yaml --out proy/imagenes     # Qwen-Image Lightning: N variantes por asset (solo GPUs de 48 GB)
+assetgen imagenes  --config assetgen.yaml --out proy/imagenes     # Qwen-Image Lightning o Z-Image Turbo (+ControlNet de pose): N variantes por asset (solo GPUs de 48 GB)
 # mira proy/imagenes/hoja_<asset>.png y edita proy/imagenes/seleccion.yaml (asset: variante, por defecto 1)
 assetgen construir --config assetgen.yaml --imagenes proy/imagenes --out proy/build
 # -> proy/build/final/<asset>.glb con sus clips, proy/build/resumen.json (asset, tipo, clips, caras, MB, costo)
@@ -34,6 +34,14 @@ assetgen construir --config assetgen.yaml --imagenes proy/imagenes --out proy/bu
 (`humanoide`: "standing in A-pose with arms slightly away from the body, empty hands, full body"; `mecanico`/`criatura`: "full body, centered").
 Escribe `<asset>_v1..vN.png`, `hoja_<asset>.png` (<=1000 px), `seleccion.yaml` (no pisa elecciones existentes) y `prompts.yaml`.
 Usa `--variantes N` (def. 4) y `--solo a,b`. El pod tiene disco de >=100 GB (pesos de Qwen ~58 GB).
+
+Modelo de imagen (`modelo_imagen: qwen|zimage`, a nivel proyecto y por asset; por defecto `qwen`):
+- `qwen` -> `ghcr.io/jahziel1/assetgen-qwen`, resolucion por defecto 1328 (`tamano_imagen` en el proyecto o el asset la cambia).
+- `zimage` -> `ghcr.io/jahziel1/assetgen-zimage` (Z-Image Turbo, Apache 2.0), resolucion por defecto 1536; en A40 ~18 s/imagen (~29 s con ControlNet), VRAM 30-39 GB.
+  `pose: a|libre` por asset (por defecto `a` para `humanoide`, `libre` para el resto): con `a` el generador dibuja un esqueleto OpenPose en pose A
+  y lo usa con el ControlNet oficial `alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1` (2602-8steps, Apache 2.0). `pose` solo tiene efecto con `zimage`.
+- Si un proyecto mezcla modelos, `imagenes` agrupa por modelo: **un pod por modelo**.
+- `literal: true` en un asset usa su `prompt` tal cual, sin sufijos de estilo ni de tipo.
 
 `construir` valida todo antes de encender nada (imagenes, plantillas, rutas de Quaternius y Blender) y despues:
 1. `3d` con el preset del proyecto; el GLB se llama como el asset del yaml (`arquero.glb`), no como la imagen.
@@ -111,7 +119,10 @@ El preset `alto` en `construir`: TRELLIS.2 genera en calidad (150k caras, textur
 ## Que hace por dentro
 
 1. Elige GPU de la lista con precio <= tope (consulta `runpodctl gpu list`). Si un pod no obtiene SSH en 15 minutos (o entra en error), lo borra
-   y prueba con la siguiente GPU.
+   y prueba con la siguiente GPU. **Si 2 pods seguidos no arrancan, el CLI se detiene y avisa** (no sigue probando GPUs).
+   Deteccion de "listo": la fuente principal es `runpodctl pod get` (estado, `uptimeSeconds`, `ssh.ip`/`ssh.port`) mas un intento real de conexion
+   (`ssh -o ConnectTimeout=5 ... true`) cada ~6 s; `runpodctl ssh info` solo se consulta como respaldo (se queda en "not ready" aunque el pod ya corra).
+   Cada intento (tambien los fallidos y los que no consiguieron pod) queda en `costos.jsonl` con `resultado`, `estado_final`, hitos y costo.
 2. Crea el pod `assetgen-<tipo>-<fecha>` y arma el apagado de seguridad (en el pod y un vigilante local aparte).
 3. Sube las entradas por `tar` sobre SSH, corre `prepare_weights.sh`, y despues la generacion.
 4. Descarga resultados y `stats.json` (tiempos de arranque, generacion, costo y estadisticas por asset).
@@ -121,8 +132,8 @@ Los pods se llaman `assetgen-*`; `estado` y `limpiar` solo tocan esos.
 
 ## assetgen.yaml
 
-Ver `ejemplos/assetgen.yaml`. Campos: `preset`, `estilo`, `sufijo_estilo`, `variantes`, `camara`, `presupuesto_poligonos`, `gpu_modo` y la lista `assets`
-(`nombre`, `tipo` = humanoide|mecanico|criatura|otro, `plantilla` (obligatoria en mecanico), `prompt` y/o `imagen`). `3d --config` usa los assets con `imagen`.
+Ver `ejemplos/assetgen.yaml`. Campos: `preset`, `estilo`, `sufijo_estilo`, `variantes`, `modelo_imagen`, `tamano_imagen`, `camara`, `presupuesto_poligonos`, `gpu_modo` y la lista `assets`
+(`nombre`, `tipo` = humanoide|mecanico|criatura|otro, `plantilla` (obligatoria en mecanico), `prompt` y/o `imagen`, `modelo_imagen`, `pose`, `tamano_imagen`, `literal`). `3d --config` usa los assets con `imagen`.
 Animacion guiada por video no esta en el CLI.
 
 ## Notas

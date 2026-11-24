@@ -3,7 +3,7 @@ import argparse, glob, json, os, shutil, subprocess, tempfile, time
 
 from . import globalcfg, runpod as rp, yamlmini
 from .comun import _candidatas, _revisar_presupuesto
-from .config import cargar, prompt_completo, PLANTILLAS
+from .config import cargar, prompt_completo, modelo_imagen, pose_de, tamano_imagen, PLANTILLAS
 from .glbinfo import glb_info
 from .presets import *
 from .sesion import Sesion, log
@@ -11,6 +11,14 @@ from .sesion import Sesion, log
 RAIZ_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BLENDER_DIR = os.path.join(RAIZ_REPO, "blender")
 IMG_QWEN = "ghcr.io/jahziel1/assetgen-qwen:latest"
+IMG_ZIMAGE = "ghcr.io/jahziel1/assetgen-zimage:latest"
+# por modelo de imagen: imagen Docker, venv y script del pod, segundos por imagen (A40/A6000 a la resolucion por defecto) y arranque estimado
+MODELOS_IMG = {
+    "qwen": dict(imagen=IMG_QWEN, venv="/root/venv-qwen", script="gen_images.py", seg_img=16, arranque=12 * 60 + 420,
+                 nombre="Qwen-Image Lightning 8 pasos"),
+    "zimage": dict(imagen=IMG_ZIMAGE, venv="/root/venv-zimage", script="gen_images_zimage.py", seg_img=30, arranque=12 * 60 + 240,
+                   nombre="Z-Image Turbo 9 pasos + ControlNet de pose"),
+}
 TIPOS_RIG = ("humanoide", "criatura")
 QWEN_SEG_IMG = 12          # estimacion por imagen en una 48 GB lenta (A6000/A40); L40S ~4 s
 QWEN_ARRANQUE = 12 * 60 + 420   # imagen + SSH + descarga de pesos (~58 GB) + carga
@@ -86,50 +94,73 @@ def cmd_imagenes(args):
     pend = [a for a in assets if args.forzar or not completo(a)]
     if len(pend) < len(assets):
         log(f"ya existen las variantes de {len(assets) - len(pend)} asset(s); no se regeneran (usa --forzar)")
-    prompts = {a["nombre"]: {"prompt": prompt_completo(cfg, a), "variants": nvar} for a in assets}
+    prompts = {}
+    for a in assets:
+        m = modelo_imagen(cfg, a)
+        pose = pose_de(a) if m == "zimage" else "libre"     # la pose A usa ControlNet: solo existe en zimage
+        if m == "qwen" and a.get("pose") == "a":
+            log(f"AVISO: '{a['nombre']}' pide pose: a pero qwen no tiene ControlNet; se usa solo el texto (A-pose en el prompt)")
+        prompts[a["nombre"]] = {"prompt": prompt_completo(cfg, a), "variants": nvar, "modelo": m, "size": tamano_imagen(cfg, a, m), "pose": pose}
     for n, p in prompts.items():
-        log(f"prompt {n}: {p['prompt']}")
+        log(f"prompt {n} [{p['modelo']} {p['size']} pose={p['pose']}]: {p['prompt']}")
     if pend:
-        c = _candidatas(args, min_gb=40, solo48=True)
-        seg = QWEN_ARRANQUE + 120 + len(pend) * nvar * QWEN_SEG_IMG
-        _revisar_presupuesto(args, c, seg)
+        # un pod por modelo de imagen
+        grupos = {}
+        for a in pend:
+            grupos.setdefault(prompts[a["nombre"]]["modelo"], []).append(a)
+        if not args.dry_run:
+            with open(os.path.join(out, "prompts.yaml"), "w") as f:
+                yaml.safe_dump({"seeds": cfg.get("seeds", [11, 222, 3333, 44444]), "variants": nvar, "prompts": prompts}, f,
+                               allow_unicode=True, sort_keys=False)
+        resultados = []
+        for modelo, lista in grupos.items():
+            M = MODELOS_IMG[modelo]
+            c = _candidatas(args, min_gb=40, solo48=True)
+            seg = M["arranque"] + 120 + len(lista) * nvar * M["seg_img"]
+            log(f"modelo {modelo}: {len(lista)} asset(s) ({', '.join(a['nombre'] for a in lista)}) en un pod")
+            _revisar_presupuesto(args, c, seg)
+            if args.dry_run:
+                log("dry-run: candidatas " + ", ".join(f"{n} ${pr:.2f}" for _, n, pr, _ in c)); continue
+            stage = tempfile.mkdtemp(prefix="assetgen-img-"); bajado = tempfile.mkdtemp(prefix="assetgen-imgout-")
+            try:
+                cfg_gen = {"seeds": cfg.get("seeds", [11, 222, 3333, 44444]), "variants": nvar,
+                           "prompts": {a["nombre"]: {k: v for k, v in prompts[a["nombre"]].items() if k != "modelo"} for a in lista}}
+                with open(os.path.join(stage, "prompts.yaml"), "w") as f:
+                    yaml.safe_dump(cfg_gen, f, allow_unicode=True, sort_keys=False)
+                t = {}
+                with Sesion("imagenes-" + modelo, M["imagen"], c, max(args.disco, 100), out, max_min=args.max_min, presupuesto=args.presupuesto,
+                            espera_ssh=args.timeout_arranque * 60, comando=f"imagenes {modelo} n={len(lista)}x{nvar}") as s:
+                    t0 = s.t_crear
+                    s.subir(stage, ["prompts.yaml"], "/root/in")
+                    s.subir_archivo(os.path.join(RAIZ_REPO, "scripts", M["script"]), "/root/gen_images_local.py")
+                    log(f"descargando pesos (prepare_weights.sh {modelo})")
+                    s.ssh(f"/opt/assetgen/prepare_weights.sh {modelo}")
+                    t["pesos_listos"] = round(time.time() - t0, 1)
+                    log(f"pesos listos a los {t['pesos_listos']} s del pod")
+                    tg = time.time()
+                    s.ssh(f"mkdir -p /root/out/img && cd /root && flock /root/gpu.lock {M['venv']}/bin/python /root/gen_images_local.py "
+                          "/root/in/prompts.yaml --out /root/out/img" + (" --force" if args.forzar else ""))
+                    t["generacion"] = round(time.time() - tg, 1)
+                    s.bajar("/root/out/img", bajado)
+                    t["total_pod"] = round(time.time() - t0, 1)
+                    t["ssh_listo"] = s.hitos.get("ssh_listo")
+                    t["fuente_listo"] = s.hitos.get("fuente_listo")
+                    gpu, precio = s.gpu, s.precio_h
+                for f in glob.glob(os.path.join(bajado, "*.png")):
+                    shutil.move(f, os.path.join(out, os.path.basename(f)))
+                gen = []
+                try:
+                    gen = json.load(open(os.path.join(bajado, "stats.json"))).get("images", [])
+                except Exception:
+                    pass
+                resultados.append({"modelo": M["nombre"], "gpu": gpu, "precio_h": precio, "tiempos_s": t, "costo_usd": s.costo_total, "imagenes": gen})
+            finally:
+                shutil.rmtree(stage, ignore_errors=True); shutil.rmtree(bajado, ignore_errors=True)
         if args.dry_run:
-            log("dry-run: candidatas " + ", ".join(f"{n} ${pr:.2f}" for _, n, pr, _ in c)); return 0
-        stage = tempfile.mkdtemp(prefix="assetgen-img-")
-        try:
-            cfg_gen = {"size": int(cfg.get("tamano_imagen", 1024)), "variants": nvar,
-                       "seeds": cfg.get("seeds", [11, 222, 3333, 44444]),
-                       "prompts": {a["nombre"]: prompts[a["nombre"]] for a in pend}}
-            with open(os.path.join(stage, "prompts.yaml"), "w") as f:
-                yaml.safe_dump(cfg_gen, f, allow_unicode=True, sort_keys=False)
-            shutil.copy(os.path.join(stage, "prompts.yaml"), os.path.join(out, "prompts.yaml"))
-            t = {}
-            with Sesion("imagenes", IMG_QWEN, c, max(args.disco, 100), out, max_min=args.max_min, presupuesto=args.presupuesto,
-                        espera_ssh=args.timeout_arranque * 60, comando=f"imagenes n={len(pend)}x{nvar}") as s:
-                t0 = s.t_crear
-                s.subir(stage, ["prompts.yaml"], "/root/in")
-                s.subir_archivo(os.path.join(RAIZ_REPO, "scripts", "gen_images.py"), "/root/gen_images_local.py")
-                log("descargando pesos (prepare_weights.sh qwen, ~58 GB)")
-                s.ssh("/opt/assetgen/prepare_weights.sh qwen")
-                t["pesos_listos"] = round(time.time() - t0, 1)
-                log(f"pesos listos a los {t['pesos_listos']} s del pod")
-                tg = time.time()
-                s.ssh("mkdir -p /root/out/img && cd /root && flock /root/gpu.lock /root/venv-qwen/bin/python /root/gen_images_local.py "
-                      "/root/in/prompts.yaml --out /root/out/img" + (" --force" if args.forzar else ""))
-                t["generacion"] = round(time.time() - tg, 1)
-                s.bajar("/root/out/img", out)
-                t["total_pod"] = round(time.time() - t0, 1)
-                t["ssh_listo"] = s.hitos.get("ssh_listo")
-                gpu, precio = s.gpu, s.precio_h
-        finally:
-            shutil.rmtree(stage, ignore_errors=True)
-        gen = {}
-        try:
-            gen = json.load(open(os.path.join(out, "stats.json"))).get("images", [])
-        except Exception:
-            pass
-        _a_json(os.path.join(out, "stats.json"), {"modelo": "Qwen-Image Lightning 8 pasos", "gpu": gpu, "precio_h": precio, "tiempos_s": t,
-                                                   "costo_usd": s.costo_total, "variantes": nvar, "imagenes": gen})
+            return 0
+        if resultados:
+            _a_json(os.path.join(out, "stats.json"), {"costo_usd": round(sum(r["costo_usd"] for r in resultados), 4),
+                                                       "variantes": nvar, "grupos": resultados})
     elif args.dry_run:
         log("dry-run: nada que generar"); return 0
     faltan = [a["nombre"] for a in assets if not completo(a)]
