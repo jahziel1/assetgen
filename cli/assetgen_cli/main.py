@@ -278,8 +278,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="assetgen", description="Genera assets 3D de juegos en GPUs rentadas (RunPod).")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    def comunes(p):
-        p.add_argument("--out", required=True, help="carpeta de salida")
+    def comunes(p, con_out=True):
+        if con_out:
+            p.add_argument("--out", required=True, help="carpeta de salida")
         p.add_argument("--modo", choices=["normal", "rapido"], default="normal", help="lista de GPUs (normal: A6000 -> A40 -> L40S ...; rapido: L40S primero)")
         p.add_argument("--tope", type=float, default=TOPE_PRECIO_H, help=f"precio maximo USD/h (def. {TOPE_PRECIO_H})")
         p.add_argument("--gpu", help="lista explicita de gpuId separada por comas (sustituye al modo)")
@@ -334,6 +335,13 @@ def main(argv=None):
     pa.add_argument("--tam", type=int, default=1024, help="lado de los renders en px (def. 1024)")
     pa.add_argument("--sin-renders", action="store_true", help="solo restricciones.yaml")
     pa.set_defaults(fn=cmd_remaster)
+    pk = rsub.add_parser("concepto", help="paso 5b: vistas del original + referencias de estilo -> N variantes de concepto (frente/lado/espalda) con Qwen-Image-Edit en un pod")
+    pk.add_argument("--vistas", required=True, help="carpeta con frente/lado/espalda del original (salida de `remaster analizar`; sirve su carpeta o su renders/)")
+    pk.add_argument("--referencias", nargs="+", default=[], help="imagenes (o carpetas) de referencia de estilo del remake; ideal <= 3")
+    pk.add_argument("--prompt", help="descripcion del personaje/estilo que se anade al prompt base (en ingles rinde mejor)")
+    pk.add_argument("--variantes", type=int, default=4, help="variantes (semillas distintas), def. 4")
+    pk.add_argument("--salida", required=True, help="carpeta de salida (v<n>_frente|lado|espalda.png, hoja_concepto.jpg, concepto.yaml, seleccion.yaml)")
+    comunes(pk, con_out=False); pk.set_defaults(fn=cmd_remaster)
 
     sub.add_parser("gasto", help="gasto del mes (todos los proyectos) y tope mensual").set_defaults(fn=cmd_gasto)
     sub.add_parser("estado", help="pods de assetgen encendidos y gasto por hora").set_defaults(fn=cmd_estado)

@@ -120,4 +120,7 @@ def analizar(args):
 
 
 def cmd_remaster(args):
+    if args.rcmd == "concepto":
+        from .remaster_concepto import cmd_concepto
+        return cmd_concepto(args)
     return analizar(args)

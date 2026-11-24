@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Descarga los pesos del modelo (no van dentro de la imagen). Uso: prepare_weights.sh <trellis2|hunyuan|puppeteer|qwen|zimage>
+# Descarga los pesos del modelo (no van dentro de la imagen). Uso: prepare_weights.sh <trellis2|hunyuan|puppeteer|qwen|qwen_edit|zimage>
 # Idempotente. Respeta HF_HOME / HF_TOKEN si estan definidos.
 set -euo pipefail
 export PATH=/usr/local/cuda/bin:$PATH CUDA_HOME=/usr/local/cuda
 MODEL="${1:-${ASSETGEN_MODEL:-}}"
-[ -n "$MODEL" ] || { echo "uso: $0 <trellis2|hunyuan|puppeteer|qwen|zimage>"; exit 2; }
+[ -n "$MODEL" ] || { echo "uso: $0 <trellis2|hunyuan|puppeteer|qwen|qwen_edit|zimage>"; exit 2; }
 
 case "$MODEL" in
   trellis2)
@@ -39,6 +39,11 @@ case "$MODEL" in
     PY=/root/venv-imagen/bin/python; [ -x "$PY" ] || PY=/root/venv-qwen/bin/python   # imagen unificada o imagen vieja
     # Qwen-Image base (~57 GB) + LoRA Lightning 8 pasos V2.0 bf16 (Apache 2.0, no gated)
     $PY -c 'from huggingface_hub import snapshot_download as s, hf_hub_download as h; s("Qwen/Qwen-Image"); h("lightx2v/Qwen-Image-Lightning","Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors")'
+    ;;
+  qwen_edit)
+    PY=/root/venv-imagen/bin/python
+    # Qwen-Image-Edit-2511 (editor multi-imagen, ~57 GB, Apache 2.0, no gated) + LoRA Lightning 8 pasos V1.0 bf16 (Apache 2.0)
+    $PY -c 'from huggingface_hub import snapshot_download as s, hf_hub_download as h; s("Qwen/Qwen-Image-Edit-2511"); h("lightx2v/Qwen-Image-Edit-2511-Lightning","Qwen-Image-Edit-2511-Lightning-8steps-V1.0-bf16.safetensors")'
     ;;
   zimage)
     PY=/root/venv-imagen/bin/python; [ -x "$PY" ] || PY=/root/venv-zimage/bin/python   # imagen unificada o imagen vieja

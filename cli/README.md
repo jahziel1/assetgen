@@ -239,3 +239,19 @@ assetgen remaster analizar --original piezas_vb_ib/ --layout layout.yaml \      
 - Los ejes salen del layout/linea de comandos (`manual`) o se infieren (`inferido`): arriba = +y en glTF/fbx; frente = hacia donde sobresalen los pies. Revisa `vistas.jpg`.
 - Los renders muestran la pose que tenga el archivo (no necesariamente un reposo/A-pose).
 - Pruebas: `cli/tests/test_remaster.py` (datos sinteticos, sin Blender).
+
+### `assetgen remaster concepto` (paso 5b): imagen de concepto del remake
+
+Con GPU (un pod de la imagen `assetgen-imagen`, sin rebuild: `gen_concepto.py` y `prepare_weights.sh` se suben al pod). Editor de imagenes
+**Qwen-Image-Edit-2511** (Apache 2.0, multi-imagen, `QwenImageEditPlusPipeline`) con la LoRA Lightning de 8 pasos de lightx2v (Apache 2.0).
+
+```bash
+assetgen remaster concepto --vistas analisis/ --referencias ref1.png ref2.png [--prompt "descripcion del personaje"] \
+    [--variantes 4] --salida concepto/ [--presupuesto 0.4] [--nube any]
+```
+
+- Por variante (semilla propia): **frente** = editar [frente del original, referencias] (pose A, fondo blanco, 768x1328); **lado** y **espalda** =
+  editar [frente generado, lado/espalda del original]. Las vistas del original se recortan, se centran y su fondo liso se pasa a blanco.
+- Salidas: `v<n>_{frente,lado,espalda}.png`, `hoja_concepto.jpg` (<= 1000 px, una fila por variante), `concepto.yaml` (modelo, semillas, prompts,
+  tiempos, costo) y `seleccion.yaml` (`concepto: <n>`). Tiempos medidos en A40: arranque ~230 s, pesos ~140 s, ~60 s por frente (4 imagenes de entrada), ~30 s por lado/espalda.
+- Pruebas sin GPU: `cli/tests/test_concepto.py`.
