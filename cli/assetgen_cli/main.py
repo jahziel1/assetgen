@@ -337,7 +337,7 @@ def main(argv=None):
     pa.set_defaults(fn=cmd_remaster)
     pk = rsub.add_parser("concepto", help="paso 5b: vistas del original + referencias de estilo -> N variantes de concepto (frente/lado/espalda) con Qwen-Image-Edit en un pod")
     pk.add_argument("--vistas", required=True, help="carpeta con frente/lado/espalda del original (salida de `remaster analizar`; sirve su carpeta o su renders/)")
-    pk.add_argument("--referencias", nargs="+", default=[], help="imagenes (o carpetas) de referencia de estilo del remake; ideal <= 3")
+    pk.add_argument("--referencias", nargs="+", default=[], help="OPCIONAL: imagenes (o carpetas) de referencia de estilo; ideal <= 3. Sin ellas el estilo sale solo del texto (--prompt y el estilo base)")
     pk.add_argument("--prompt", help="descripcion del personaje/estilo que se anade al prompt base (en ingles rinde mejor)")
     pk.add_argument("--variantes", type=int, default=4, help="variantes (semillas distintas), def. 4")
     pk.add_argument("--salida", required=True, help="carpeta de salida (v<n>_frente|lado|espalda.png, hoja_concepto.jpg, concepto.yaml, seleccion.yaml)")

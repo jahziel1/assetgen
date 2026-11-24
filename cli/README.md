@@ -246,10 +246,12 @@ Con GPU (un pod de la imagen `assetgen-imagen`, sin rebuild: `gen_concepto.py` y
 **Qwen-Image-Edit-2511** (Apache 2.0, multi-imagen, `QwenImageEditPlusPipeline`) con la LoRA Lightning de 8 pasos de lightx2v (Apache 2.0).
 
 ```bash
-assetgen remaster concepto --vistas analisis/ --referencias ref1.png ref2.png [--prompt "descripcion del personaje"] \
+assetgen remaster concepto --vistas analisis/ [--referencias ref1.png ref2.png] [--prompt "descripcion del personaje"] \
     [--variantes 4] --salida concepto/ [--presupuesto 0.4] [--nube any]
 ```
 
+- `--referencias` es opcional. Sin ellas el estilo sale solo del texto (estilo base "realistic AAA remake, PBR" + `--prompt` con el diseno);
+  recomendado cuando las referencias podrian ser copiadas tal cual por el editor (el frente tiende a clonar una referencia).
 - Por variante (semilla propia): **frente** = editar [frente del original, referencias] (pose A, fondo blanco, 768x1328); **lado** y **espalda** =
   editar [frente generado, lado/espalda del original]. Las vistas del original se recortan, se centran y su fondo liso se pasa a blanco.
 - Salidas: `v<n>_{frente,lado,espalda}.png`, `hoja_concepto.jpg` (<= 1000 px, una fila por variante), `concepto.yaml` (modelo, semillas, prompts,

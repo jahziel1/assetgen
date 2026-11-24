@@ -30,9 +30,12 @@ SEG_IMG = 30              # por imagen (A40/A6000, 8 pasos, 2-4 imagenes de entr
 MARGEN = 1.5
 VENV = "/root/venv-imagen"
 
-POSE_A = ("standing upright in a neutral A-pose: both arms straight and clearly spread away from the torso at about 40 degrees, "
-          "with a visible gap between each arm and the body, open relaxed hands with fingers slightly spread (not fists), "
-          "legs straight and only slightly apart, feet flat on the ground, no weapon or object in the hands")
+ESTILO = ("realistic AAA video game remake character, high-detail PBR materials, physically based lighting, "
+          "photoreal skin, fabric and leather")
+POSE_A = ("standing straight in a neutral A-pose: both arms straight and clearly spread away from the torso at about 40 degrees, "
+          "with a visible gap between each arm and the body, open relaxed hands with separated fingers (not fists), "
+          "legs straight and parallel, shoulder-width apart, feet flat on the ground, neutral expression, "
+          "nothing held in the hands (no props, no weapon)")
 FORMATO = ("full body from head to feet fully in frame, orthographic look with no perspective, on a plain pure white (#FFFFFF) "
            "background: replace any gray or black background of the pictures with pure white, no gradient, no floor, "
            "soft even lighting, no cast shadow on the background")
@@ -44,17 +47,17 @@ def _lista_a_texto(nums):
 
 
 def prompt_frente(n_refs, extra=""):
-    """Imagen 1 = vista frente del original; imagenes 2..n_refs+1 = referencias de estilo."""
-    s = ("Redraw the character in Picture 1 as a high quality realistic AAA game character. Keep exactly the design, outfit "
-         "pieces, silhouette and body proportions of the character in Picture 1 (head size, limb lengths, clothing layers, "
-         "accessories and their placement). ")
+    """Imagen 1 = vista frente del original; imagenes 2..n_refs+1 = referencias de estilo (opcionales: con 0 el estilo sale solo del texto)."""
+    s = (f"Redraw the character in Picture 1 as a {ESTILO}. Keep exactly the design, outfit pieces, colors, silhouette and body "
+         "proportions of the character in Picture 1 (head size, limb lengths, clothing layers, accessories and their placement), "
+         "but ignore its low resolution, its flat look, its crouched pose and its closed fists. ")
     if n_refs:
         refs = _lista_a_texto(range(2, n_refs + 2))
         s += (f"Take the visual style, face, materials, color palette, realism and rendering quality from the style reference "
               f"picture{'s' if n_refs > 1 else ''} {refs}, but do not copy their pose or their camera. ")
     if extra:
         s += extra.strip().rstrip(".") + ". "
-    s += f"The character is {POSE_A}, facing the camera, front view, {FORMATO}."
+    s += f"The character is {POSE_A}, facing the camera, orthographic front view, {FORMATO}."
     return s
 
 
@@ -67,11 +70,11 @@ def prompt_vista(vista, extra=""):
         mirada = "the exact back view, seen from behind"
         guia = "Picture 2 is a low quality render of the original model seen from behind: use it only to see how the outfit pieces and silhouette look from behind"
     s = (f"Show the same person and the same outfit as in Picture 1, seen from {mirada}. Same character, same face and hair, same clothes, "
-         f"same colors, materials, proportions and rendering style as Picture 1. {guia}; do not copy its low quality, its flat gray "
-         "look or its crouched pose. ")
+         f"same colors, materials, proportions and rendering style as Picture 1 ({ESTILO}). {guia}; do not copy its low quality, its flat gray "
+         "look, its crouched pose or its staggered, bent legs. ")
     if extra:
         s += extra.strip().rstrip(".") + ". "
-    s += f"The character is {POSE_A}, {FORMATO}."
+    s += f"The character is {POSE_A}, same A-pose as Picture 1, standing still (not walking), {FORMATO}."
     return s
 
 
@@ -195,7 +198,7 @@ def cmd_concepto(args):
     vistas = encontrar_vistas(os.path.abspath(os.path.expanduser(args.vistas)))
     refs = listar_referencias(args.referencias)
     if not refs:
-        log("AVISO: sin --referencias: el frente solo usa la vista del original y el texto")
+        log("sin --referencias: el estilo sale solo del texto del prompt (la vista del original solo da el diseno)")
     if len(refs) > 3:
         log(f"AVISO: {len(refs)} referencias; el editor rinde mejor con <= 3 (cada imagen extra alarga la generacion)")
     nvar = args.variantes

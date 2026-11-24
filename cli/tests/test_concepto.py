@@ -28,9 +28,17 @@ class Plan(unittest.TestCase):
         p = C.prompt_frente(3, "blue turban with gold band")
         self.assertIn("A-pose", p); self.assertIn("40 degrees", p); self.assertIn("pure white", p); self.assertIn("not fists", p)
         self.assertIn("pictures 2, 3 and 4", p); self.assertIn("blue turban with gold band.", p)
-        self.assertIn("no weapon", p)
+        self.assertIn("no props", p); self.assertIn("separated fingers", p); self.assertIn("PBR", p)
         self.assertNotIn("style reference", C.prompt_frente(0))
         self.assertIn("reference picture 2", C.prompt_frente(1))
+
+    def test_sin_referencias(self):
+        jobs = C.plan_trabajos(2, 0, "young prince")
+        self.assertEqual(jobs[0]["imagenes"], [{"ref": "vistas/frente.png"}])      # solo el original, ninguna referencia
+        self.assertFalse(any("refs/" in im.get("ref", "") for j in jobs for im in j["imagenes"]))
+        self.assertNotIn("reference picture", jobs[0]["prompt"]); self.assertIn("young prince.", jobs[0]["prompt"])
+        self.assertIn("pure white", jobs[1]["prompt"]); self.assertIn("not walking", jobs[1]["prompt"])
+        self.assertEqual(C.listar_referencias(None), []); self.assertEqual(C.listar_referencias([]), [])
 
     def test_prompt_vistas(self):
         self.assertIn("side (profile)", C.prompt_vista("lado"))
