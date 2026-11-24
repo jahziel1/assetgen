@@ -14,6 +14,7 @@ compilan para sm 8.6, 8.9 y 9.0 (A40/A6000/3090, L40S/4090, H100).
 | `ghcr.io/jahziel1/assetgen-trellis2` | TRELLIS.2 + DINOv3 (convertido) + BiRefNet |
 | `ghcr.io/jahziel1/assetgen-hunyuan` | Hunyuan3D 2.1 (forma + textura PBR) |
 | `ghcr.io/jahziel1/assetgen-puppeteer` | Puppeteer (rigging + animación) y export GLB con bpy |
+| `ghcr.io/jahziel1/assetgen-qwen` | Qwen-Image + LoRA Lightning 8 pasos (`/opt/assetgen/gen_images.py`, `--base` para 40 pasos) |
 
 Sin pesos: al arrancar el pod ejecuta `/opt/assetgen/prepare_weights.sh <trellis2|hunyuan|puppeteer>`.
 Los scripts de ejecución están en `/opt/assetgen/` (`run_trellis2.py`, `run_hunyuan.py`, `rig.sh`, `anim.sh`...);

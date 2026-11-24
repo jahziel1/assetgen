@@ -12,6 +12,8 @@ al arrancar con `prepare_weights.sh`, y cada imagen incluye copia de las licenci
 | BiRefNet (ZhengPeng7/BiRefNet) | MIT | Sustituye a RMBG-2.0 (gated). |
 | Hunyuan3D 2.1 (Tencent-Hunyuan/Hunyuan3D-2.1, pesos tencent/Hunyuan3D-2.1) | Tencent Hunyuan 3D 2.1 Community License | **No aplica en la Union Europea, Reino Unido ni Corea del Sur**: el uso, y tambien el uso de los Outputs, fuera del "Territory" no esta licenciado. Si el producto/servicio supera 1 millon de usuarios activos mensuales hay que pedir licencia a Tencent. Sujeta a su Acceptable Use Policy; no se pueden usar Outputs para mejorar otros modelos de IA. Redistribuir (incluida esta imagen publica) exige conservar la licencia y el aviso, y solo se permite dentro del Territory. |
 | Puppeteer (Seed3D/Puppeteer) | Apache 2.0 | Los checkpoints descargados (Michelangelo, PartField, CoTracker3, Video-Depth-Anything, etc.) tienen cada uno su licencia; revisar antes de uso comercial. |
+| Qwen-Image (Qwen/Qwen-Image) | Apache 2.0 | Verificado en la ficha de Hugging Face (`license: apache-2.0`, no gated). Uso comercial permitido. |
+| Qwen-Image-Lightning (lightx2v/Qwen-Image-Lightning, LoRA 8 pasos V2.0) | Apache 2.0 | Verificado en la ficha de Hugging Face (`license: apache-2.0`, no gated). Se aplica sobre Qwen-Image. |
 | Real-ESRGAN (xinntao/Real-ESRGAN, `RealESRGAN_x4plus.pth`) | BSD 3-Clause | Lo descarga `prepare_weights.sh hunyuan`. |
 | nvdiffrast (NVlabs) | NVIDIA Source Code License (1-Way Commercial) | Dependencia compilada en la imagen TRELLIS.2; uso comercial permitido en el sentido de la licencia, con restricciones propias (leer `/opt/assetgen/licenses/nvdiffrast.LICENSE`). |
 | CuMesh, FlexGEMM (JeffreyXiang) | MIT | Dependencias de TRELLIS.2. |

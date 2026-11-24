@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Descarga los pesos del modelo (no van dentro de la imagen). Uso: prepare_weights.sh <trellis2|hunyuan|puppeteer>
+# Descarga los pesos del modelo (no van dentro de la imagen). Uso: prepare_weights.sh <trellis2|hunyuan|puppeteer|qwen>
 # Idempotente. Respeta HF_HOME / HF_TOKEN si estan definidos.
 set -euo pipefail
 export PATH=/usr/local/cuda/bin:$PATH CUDA_HOME=/usr/local/cuda
 MODEL="${1:-${ASSETGEN_MODEL:-}}"
-[ -n "$MODEL" ] || { echo "uso: $0 <trellis2|hunyuan|puppeteer>"; exit 2; }
+[ -n "$MODEL" ] || { echo "uso: $0 <trellis2|hunyuan|puppeteer|qwen>"; exit 2; }
 
 case "$MODEL" in
   trellis2)
@@ -34,6 +34,11 @@ case "$MODEL" in
       mv skinning/skinning/skinning_ckpts skinning/ && rm -rf skinning/skinning
     fi
     (cd animation && python download.py)
+    ;;
+  qwen)
+    PY=/root/venv-qwen/bin/python
+    # Qwen-Image base (~57 GB) + LoRA Lightning 8 pasos V2.0 bf16 (Apache 2.0, no gated)
+    $PY -c 'from huggingface_hub import snapshot_download as s, hf_hub_download as h; s("Qwen/Qwen-Image"); h("lightx2v/Qwen-Image-Lightning","Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors")'
     ;;
   *) echo "modelo desconocido: $MODEL"; exit 2 ;;
 esac

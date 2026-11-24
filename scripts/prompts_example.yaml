@@ -1,0 +1,11 @@
+# Ejemplo para /opt/assetgen/gen_images.py (tambien vale JSON con las mismas claves)
+style_suffix: ", single object, full body, centered, plain white background, 3/4 front view, game asset, stylized realistic, soft even lighting, no shadows on background"
+size: 1024
+variants: 2
+seeds: [11, 222]
+prompts:
+  soldado: "a roman legionary soldier with red tunic, bronze helmet and leather sandals, standing in A-pose with arms slightly away from the body, empty hands"
+  escorpion: "a giant desert scorpion creature with segmented tail and large pincers"
+  catapulta:
+    prompt: "a medieval wooden catapult with throwing arm and wheels"
+    variants: 1
