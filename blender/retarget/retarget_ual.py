@@ -313,7 +313,27 @@ def retarget(src_path, tgt_path, clips, tol=0.004):
     return None, tgt, meshes, acts, info, ms, mt
 
 
+def quitar_formas_hueso():
+    """El importador de glTF crea objetos 'Icosphere' (forma de visualizacion de huesos, ~42 vertices) en una coleccion
+    glTF_not_exported. Fuera: cualquier malla suelta (sin armadura ni piel) que no sea la del personaje; los nombres
+    pueden estar truncados/renombrados, asi que se identifican por el uso como custom_shape y por no tener piel."""
+    formas = set()
+    for o in bpy.data.objects:
+        if o.type == "ARMATURE":
+            for b in o.pose.bones:
+                if b.custom_shape:
+                    formas.add(b.custom_shape.name); b.custom_shape = None
+    for o in list(bpy.data.objects):
+        if o.type != "MESH":
+            continue
+        sin_piel = not any(m.type == "ARMATURE" for m in o.modifiers)
+        if o.name in formas or "Icosphere" in o.name or "Icosphere" in o.data.name or (sin_piel and o.parent is None):
+            bpy.data.objects.remove(o, do_unlink=True)
+
+
 def exportar(tgt, meshes, out):
+    quitar_formas_hueso()
+    meshes = [m for m in meshes if m.name in bpy.data.objects]
     bpy.ops.object.select_all(action="DESELECT")
     for o in [tgt] + meshes:
         o.select_set(True)

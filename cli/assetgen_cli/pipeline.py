@@ -1,7 +1,7 @@
 """Subcomandos encadenados: `imagenes` (Qwen en pod) y `construir` (3D -> rig -> Blender local -> final/)."""
 import argparse, glob, json, os, shutil, subprocess, tempfile, time
 
-from . import globalcfg, runpod as rp
+from . import globalcfg, runpod as rp, yamlmini
 from .comun import _candidatas, _revisar_presupuesto
 from .config import cargar, prompt_completo, PLANTILLAS
 from .glbinfo import glb_info
@@ -17,8 +17,7 @@ QWEN_ARRANQUE = 12 * 60 + 420   # imagen + SSH + descarga de pesos (~58 GB) + ca
 
 
 def _yaml():
-    import yaml
-    return yaml
+    return yamlmini.yaml()
 
 
 def _a_json(ruta, datos):
@@ -59,7 +58,7 @@ def escribir_seleccion(out, nombres):
     ruta = os.path.join(out, "seleccion.yaml")
     actual = {}
     if os.path.exists(ruta):
-        actual = yaml.safe_load(open(ruta)) or {}
+        actual = yamlmini.leer(ruta) or {}
     for n in nombres:
         actual.setdefault(n, 1)
     with open(ruta, "w") as f:
@@ -170,6 +169,31 @@ def _args_etapa(args, **kw):
     return argparse.Namespace(**d)
 
 
+def _seco(args, cfg, preset, assets, pendientes, entradas):
+    """--seco: valida la config y las entradas y muestra el plan y la estimacion, sin encender nada ni escribir salida."""
+    p = PRESETS_3D[preset]
+    n_rig = sum(1 for a in pendientes if a.get("tipo") in TIPOS_RIG)
+    seg = 0
+    if pendientes:
+        seg += ARRANQUE_EST + 90 + len(pendientes) * p["seg_asset"]
+    if n_rig:
+        seg += ARRANQUE_EST + 120 + n_rig * RIG_SEG_ASSET
+    est = args.tope * seg / 3600     # cota superior: precio maximo permitido por hora (no consulta RunPod)
+    log(f"SECO (no se enciende nada). proyecto={cfg.get('proyecto')} preset={preset}"
+        + (f" (postproceso local: quads ~{p['post']['caras']} + bake {p['post']['tex']}, antes del rig/plantilla)" if p.get("post") else ""))
+    for a in assets:
+        log(f"  {a['nombre']}: {a.get('tipo')}{' / ' + a['plantilla'] if a.get('plantilla') else ''}  imagen={entradas[a['nombre']]}"
+            f"  {'pendiente' if a in pendientes else 'ya existe en final/'}")
+    tope = globalcfg.cargar().get("tope_mensual_usd")
+    gasto = globalcfg.gasto_mes()
+    log(f"estimacion maxima ~{seg / 60:.0f} min x ${args.tope:.2f}/h = ${est:.2f}; gasto del mes ${gasto:.2f}"
+        + (f"; tope mensual ${float(tope):.2f} -> {'SE SUPERARIA (pediria confirmacion)' if gasto + est > float(tope) else 'dentro del tope'}"
+           if tope is not None else "; sin tope mensual"))
+    log(f"config global: {globalcfg.ruta_global()} ({'leida' if os.path.exists(globalcfg.ruta_global()) else 'no existe'})")
+    log("validacion ok")
+    return 0
+
+
 def cmd_construir(args):
     from .main import cmd_3d, cmd_rig
     t_ini = time.time()
@@ -177,12 +201,17 @@ def cmd_construir(args):
     cfg = cargar(args.config)
     imgs = os.path.abspath(args.imagenes)
     sel_ruta = args.seleccion or os.path.join(imgs, "seleccion.yaml")
-    sel = (yaml.safe_load(open(sel_ruta)) or {}) if os.path.exists(sel_ruta) else {}
+    sel = (yamlmini.leer(sel_ruta) or {}) if os.path.exists(sel_ruta) else {}
     assets = cfg["assets"]
     if args.solo:
         s = set(args.solo.split(",")); assets = [a for a in assets if a["nombre"] in s]
     out = os.path.abspath(args.out); os.makedirs(out, exist_ok=True)
     preset = args.preset or cfg["preset"]
+    if preset in PRESETS_RESERVADOS:
+        raise SystemExit(f"El preset '{preset}' esta reservado y aun no se puede correr (usa boceto|medio|alto)")
+    if preset not in PRESETS_3D:
+        raise SystemExit(f"preset desconocido '{preset}' (boceto|medio|alto)")
+    post = PRESETS_3D[preset].get("post")
 
     # ---- validar todo ANTES de gastar
     entradas = {}
@@ -199,11 +228,15 @@ def cmd_construir(args):
         entradas[n] = f
     if any(a.get("tipo") == "humanoide" for a in assets):
         globalcfg.ual1()
-    if any(a.get("tipo") in ("humanoide", "mecanico") for a in assets):
+    if post or any(a.get("tipo") in ("humanoide", "mecanico") for a in assets):
         globalcfg.blender_exe()
 
-    final = os.path.join(out, "final"); os.makedirs(final, exist_ok=True)
+    final = os.path.join(out, "final")
+    if not args.seco:
+        os.makedirs(final, exist_ok=True)
     pendientes = [a for a in assets if args.forzar or not os.path.exists(os.path.join(final, a["nombre"] + ".glb"))]
+    if args.seco:
+        return _seco(args, cfg, preset, assets, pendientes, entradas)
     if not pendientes:
         log("todos los assets ya tienen final/<asset>.glb (usa --forzar para rehacer)")
     # ---- 1) 3D
@@ -216,10 +249,28 @@ def cmd_construir(args):
         if rc:
             return rc
     c3 = _costo_etapa(d3, t_ini)
+    # ---- 1b) postproceso local (preset alto): quads + normal map ANTES del rig y de las plantillas, para que las
+    #          animaciones se apliquen sobre la malla final. Desde aqui `d3` apunta a la carpeta con el GLB que usan las etapas siguientes.
+    fallos = {}
+    if post:
+        dpost = os.path.join(out, "post"); os.makedirs(dpost, exist_ok=True)
+        for a in pendientes:
+            n = a["nombre"]; g = os.path.join(d3, n + ".glb"); salida = os.path.join(dpost, n + ".glb")
+            if not os.path.exists(g):
+                fallos[n] = "TRELLIS.2 no produjo el .glb"; continue
+            if os.path.exists(salida) and os.path.getsize(salida) > 0 and not args.forzar and os.path.getmtime(salida) >= os.path.getmtime(g):
+                log(f"post/{n}.glb ya existe; no se rehace (usa --forzar)"); continue
+            t = time.time()
+            ok, rc = _blender("postproceso/postprocesar.py", [g, salida, "--caras", str(post["caras"]), "--tex", str(post["tex"])],
+                              os.path.join(out, "logs", n + "_post.log"), salida, timeout=3600)
+            if ok:
+                log(f"post/{n}.glb listo (remesh a quads ~{post['caras']} + bake {post['tex']}, {time.time() - t:.0f} s)" + (f" [blender rc={rc}]" if rc else ""))
+            else:
+                fallos[n] = f"fallo en el postproceso; ver {os.path.join(out, 'logs', n + '_post.log')}"
+        d3 = dpost
     # ---- 2) rig (solo humanoide y criatura)
     rig_in = os.path.join(out, "_rig_in"); shutil.rmtree(rig_in, ignore_errors=True); os.makedirs(rig_in)
-    a_rig = [a for a in pendientes if a.get("tipo") in TIPOS_RIG]
-    fallos = {}
+    a_rig = [a for a in pendientes if a.get("tipo") in TIPOS_RIG and a["nombre"] not in fallos]
     for a in a_rig:
         g = os.path.join(d3, a["nombre"] + ".glb")
         if os.path.exists(g):
@@ -271,7 +322,7 @@ def cmd_construir(args):
         c_img = float(json.load(open(os.path.join(imgs, "stats.json"))).get("costo_usd", 0))
     except Exception:
         pass
-    resumen = {"proyecto": cfg.get("proyecto"), "preset": preset, "costo_3d_usd": round(c3, 4), "costo_rig_usd": round(crig, 4),
+    resumen = {"proyecto": cfg.get("proyecto"), "preset": preset, "postproceso": post, "costo_3d_usd": round(c3, 4), "costo_rig_usd": round(crig, 4),
                "costo_imagenes_usd": round(c_img, 4), "costo_total_usd": round(c3 + crig + c_img, 4),
                "nota_costo": "costo por asset = parte proporcional de cada etapa (imagenes, 3D, rig)", "assets": []}
     n_tot = len(cfg["assets"])

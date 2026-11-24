@@ -397,14 +397,90 @@ def detecta_rotor(M, verbose=True):
     if axis[np.argmax(np.abs(axis))] < 0: axis = -axis
     if abs(abs(axis) @ np.array([1, 0, 0])) > 0.995 or abs(abs(axis) @ np.array([0, 1, 0])) > 0.995 or abs(abs(axis) @ np.array([0, 0, 1])) > 0.995:
         axis = np.eye(3)[np.argmax(np.abs(axis))] * np.sign(axis[np.argmax(np.abs(axis))])
-    vs = np.unique(np.concatenate([M.vidx[x[0]] for x in inl]))
-    P = M.co[vs] - hub
-    ax_c = P @ axis; rad = np.linalg.norm(P - np.outer(ax_c, axis), axis=1)
-    R = float(rad.max()); a0, a1 = ax_c.min() - 0.02 * L, ax_c.max() + 0.02 * L
-    fp = M.fc - hub; fa = fp @ axis; fr = np.linalg.norm(fp - np.outer(fa, axis), axis=1)
-    inside = (fr < R * 1.05) & (fa > a0) & (fa < a1)
-    cin = np.bincount(M.flab[inside], minlength=M.nch)
-    ok = cin > 0.6 * M.nf
-    faces = np.where(ok[M.flab])[0]
-    if verbose: print("rotor: hub %s eje %s radio %.3f aspas %d caras %d" % (hub.round(3), axis.round(3), R, len(inl), len(faces)))
-    return dict(centro=hub, eje=axis, radio=R, faces=faces, aspas=[x[0] for x in inl])
+    R0 = detecta_rotor_refina(M, hub, axis, inl, verbose)
+    return R0
+
+
+def componentes_soldadas(M, tol=1e-3):
+    """Componentes conexos de la malla con vértices coincidentes soldados (tol relativa a L).
+    Las islas UV (charts) trocean la malla; esto recupera las piezas físicas. Devuelve etiqueta por cara."""
+    key = np.round(M.co / (tol * M.L)).astype(np.int64)
+    _, inv = np.unique(key, axis=0, return_inverse=True)
+    lab = charts_de(int(inv.max()) + 1, inv[M.tri])
+    return lab[inv[M.tri[:, 0]]]
+
+def _cruce_aspas(M, hub, axis, inl_ids):
+    """Mínimos cuadrados: punto del plano del rotor más cercano a las rectas de las aspas (charts alargados, ponderados por largo)."""
+    A = np.zeros((3, 3)); b = np.zeros(3); n = 0
+    Pa = np.eye(3) - np.outer(axis, axis)
+    for c in inl_ids:
+        cen, w, v, ext = M.pca(c)
+        d = v[:, 2]
+        if abs(d @ axis) > 0.3 or ext[2] < 0.15 * M.L: continue
+        r = cen - hub
+        if np.linalg.norm(Pa @ (r - (r @ d) * d)) > 0.1 * M.L: continue
+        Q = Pa @ (np.eye(3) - np.outer(d, d)) @ Pa
+        A += ext[2] * Q; b += ext[2] * Q @ cen; n += 1
+    if n < 3: return hub, 0
+    h = np.linalg.lstsq(A + 1e-9 * np.eye(3), b, rcond=None)[0]
+    h = h - ((h - hub) @ axis) * axis          # se queda en el plano del cubo
+    return (h, n) if np.linalg.norm(h - hub) < 0.15 * M.L else (hub, 0)
+
+def _centro_lejano(M, mask, hub, ax, iters=8):
+    """Centroide en el plano de los vértices lejanos (>50% del radio máx.) del rotor; iterado. Aspas simétricas -> centro del eje."""
+    for _ in range(iters):
+        vs = np.unique(M.tri[mask].ravel()); Q = M.co[vs] - hub
+        qa = Q - np.outer(Q @ ax, ax); r = np.linalg.norm(qa, axis=1)
+        far = r > 0.5 * r.max()
+        if far.sum() < 10: break
+        hub = hub + qa[far].mean(0)
+    return hub
+
+def detecta_rotor_refina(M, hub, axis, inl, verbose=True, r_aspa=0.3, r_cubo=0.12):
+    """Dado un eje y un cubo aproximados: separa el rotor de la torre.
+    1) componentes soldadas (islas UV unidas por posición): torre = mole conectada a la base (suelo);
+       rotor = componentes con aspas que NO son torre.
+    2) si el rotor está fundido con la torre: criterio radial en la losa axial de las aspas: aspas = caras a
+       radio > r_aspa*R (lejos del eje) + cubo (radio < r_cubo*R).
+    3) con el rotor fundido se completan charts sueltos (lejos del eje o en el cubo, mayoría, no torre); con el rotor separado no se añade nada suelto.
+    4) centro del eje: promedio de cruce LS de aspas y centroide de vértices lejanos."""
+    L = M.L
+    fl = componentes_soldadas(M)
+    ncomp = int(fl.max()) + 1
+    nfc = np.bincount(fl, minlength=ncomp)
+    zf = M.co[M.tri][:, :, 2]
+    zlo = np.full(ncomp, np.inf); np.minimum.at(zlo, fl, zf.min(1))
+    torre = (zlo < M.mn[2] + 0.03 * L) & (nfc > 0.1 * len(M.tri))        # la mole conectada al suelo
+    ids = [x[0] for x in inl]
+    peso = np.bincount(fl[np.isin(M.flab, ids)], minlength=ncomp).astype(float)
+    rotor_comp = [int(k) for k in np.where((peso > 0.15 * peso.max()) & ~torre)[0]]
+    fundido = len(rotor_comp) == 0
+    ax = axis
+    hub_ls, n_ls = _cruce_aspas(M, hub, ax, ids)
+    fp = M.fc - hub_ls; fa = fp @ ax; fr = np.linalg.norm(fp - np.outer(fa, ax), axis=1)
+    if not fundido:
+        cand = np.isin(fl, rotor_comp)
+    else:
+        vs = np.unique(np.concatenate([M.vidx[c] for c in ids]))
+        lo, hi = np.percentile((M.co[vs] - hub_ls) @ ax, [5, 95])      # losa axial robusta (percentiles)
+        cand = (fa > lo - 0.02 * L) & (fa < hi + 0.02 * L)
+    hub_far = _centro_lejano(M, cand, hub_ls, ax)
+    hub = (hub_ls + hub_far) / 2 if n_ls else hub_far
+    fp = M.fc - hub; fa = fp @ ax; fr = np.linalg.norm(fp - np.outer(fa, ax), axis=1)
+    R = float(np.percentile(fr[cand], 99.5))
+    lejos_o_cubo = (fr > r_aspa * R) | (fr < r_cubo * R)
+    if fundido:
+        cand = cand & lejos_o_cubo
+    es_torre = np.isin(fl, np.where(torre)[0])
+    a0, a1 = fa[cand].min() - 0.01 * L, fa[cand].max() + 0.01 * L
+    mask = cand
+    if fundido:
+        # solo con el rotor fundido a la torre se completan charts sueltos; si el rotor es su propia componente,
+        # lo suelto pegado a la torre (marcos de ventana, tablones, techo) es detalle de la torre y no se arrastra
+        extra = (fr < R * 1.05) & (fa > a0) & (fa < a1) & lejos_o_cubo & ~es_torre
+        ok_chart = np.bincount(M.flab[extra], minlength=M.nch) > 0.6 * M.nf
+        mask = cand | (ok_chart[M.flab] & ~es_torre)
+    faces = np.where(mask)[0]
+    if verbose: print("rotor: hub %s (LS %s, lejano %s) eje %s radio %.3f aspas %d caras %d fundido=%s comps=%s" % (
+        hub.round(3), hub_ls.round(3), hub_far.round(3), ax.round(3), R, len(inl), len(faces), fundido, rotor_comp))
+    return dict(centro=hub, eje=ax, radio=R, faces=faces, aspas=ids)

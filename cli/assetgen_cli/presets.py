@@ -7,8 +7,14 @@ IMG_PUPPETEER = "ghcr.io/jahziel1/assetgen-puppeteer:latest"
 PRESETS_3D = {
     "boceto": {"env": {"PIPELINE_TYPE": "512", "TEX_SIZE": "1024", "DECIM": "20000"}, "seg_asset": 30},
     "medio": {"env": {"PIPELINE_TYPE": "1024_cascade", "TEX_SIZE": "2048", "DECIM": "50000"}, "seg_asset": 60},
-    "alto": {"env": {"PIPELINE_TYPE": "1024_cascade", "TEX_SIZE": "4096", "DECIM": "150000"}, "seg_asset": 150},
+    # alto: el 3D sale en calidad (150k caras, textura 4096) y se postprocesa en local (blender/postproceso): remesh a quads
+    #       (~20k) + normal map y ORM horneados a 2048. Va ANTES del rig y de las plantillas.
+    "alto": {"env": {"PIPELINE_TYPE": "1024_cascade", "TEX_SIZE": "4096", "DECIM": "150000"}, "seg_asset": 150,
+             "post": {"caras": 20000, "tex": 2048}},
 }
+# Presets reservados: se aceptan en la linea de comandos y el yaml pero construir se niega a correrlos (no hay GPU ni receta aun).
+PRESETS_RESERVADOS = ("aaa",)
+PRESETS_TODOS = list(PRESETS_3D) + list(PRESETS_RESERVADOS)
 
 # GPUs (gpuId de RunPod). 48 GB primero; las de 24 GB sirven para TRELLIS.2 (low_vram) pero no se garantizan para Puppeteer.
 GPU_48 = [

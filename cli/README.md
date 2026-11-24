@@ -15,6 +15,10 @@ cd cli && pip install -e .        # instala el comando `assetgen` (incluye PyYAM
 ./cli/bin/assetgen --help
 ```
 
+PyYAML es opcional: si no esta instalado (p. ej. un Python gestionado por Homebrew), el CLI usa un lector YAML minimo propio (`assetgen_cli/yamlmini.py`:
+mapas, listas, escalares, comentarios; sin anclas ni bloques `|`/`>`). Si `~/.config/assetgen/config.yaml` existe pero no se puede leer, el CLI **se detiene**
+con el error en vez de seguir sin tope mensual.
+
 El CLI sube `scripts/run_trellis2.py` del repo al pod, asi que no hace falta reconstruir la imagen para probar cambios.
 
 ## Pipeline completo (yaml -> final/<asset>.glb)
@@ -33,11 +37,18 @@ Usa `--variantes N` (def. 4) y `--solo a,b`. El pod tiene disco de >=100 GB (pes
 
 `construir` valida todo antes de encender nada (imagenes, plantillas, rutas de Quaternius y Blender) y despues:
 1. `3d` con el preset del proyecto; el GLB se llama como el asset del yaml (`arquero.glb`), no como la imagen.
+   1b. Solo con el preset `alto`: **postproceso local** en Blender (`blender/postproceso/postprocesar.py`) -> `<out>/post/<asset>.glb`
+   (remesh a ~20k quads con QuadriFlow, UV nuevas y normal map + ORM horneados a 2048 desde la malla de 150k; los quads reales quedan en
+   `post/<asset>_quads.blend`). Va **antes** del rig y de las plantillas: Puppeteer riggea la malla final y las animaciones de `mecanico`/`humanoide`
+   se aplican sobre ella.
 2. `rig` (Puppeteer) **solo** para `humanoide` y `criatura`. El exito se decide por la existencia del GLB riggeado (bpy da segfault al cerrar).
 3. En local con Blender (`blender/`): `humanoide` -> `blender/retarget/retarget_ual.py` (clips Idle_Loop, Walk_Loop, Run_Loop, Sword_Attack, Death de
    Quaternius UAL1); `mecanico` -> `blender/mecanica/animar_mecanico.py` con su `plantilla` (`vehiculo|catapulta|rotor`); `criatura` queda riggeada sin
    clips; otros tipos quedan como el GLB de 3D.
-Es reanudable: no repite lo que ya existe (`--forzar` para rehacer). Intermedios en `<out>/3d`, `rig`, `retarget`, `mecanica`, `logs`.
+Es reanudable: no repite lo que ya existe (`--forzar` para rehacer). Intermedios en `<out>/3d`, `post` (solo `alto`), `rig`, `retarget`, `mecanica`, `logs`.
+
+`assetgen construir ... --seco` solo valida (yaml, imagenes, config global, tope mensual, plantillas) y muestra el plan y la estimacion maxima; no enciende
+nada ni escribe salida.
 
 Verificacion visual de un final (reimporta, lista clips/texturas y renderiza una hoja de cuadros del clip principal):
 
@@ -91,8 +102,12 @@ Opciones comunes de `3d` y `rig`:
 |---|---|---|---|
 | `boceto` | `512` | 1024 | ~20k |
 | `medio` | `1024_cascade` | 2048 | ~50k |
-| `alto` | `1024_cascade` | 4096 | ~150k |
+| `alto` | `1024_cascade` | 4096 | 150k en bruto; con `construir` se postprocesa a ~20k quads + normal map/ORM 2048 |
+| `aaa` | reservado: `construir` se niega a correrlo todavia | | |
 
+El preset `alto` en `construir`: TRELLIS.2 genera en calidad (150k caras, textura 4096) y despues se hace en local (Blender, sin GPU) remesh a quads
+(~20k, QuadriFlow) + UV + bake de normal map y ORM a 2048 con la malla de 150k como alta; recien despues se riggea o se aplica la plantilla de animacion.
+`medio` y `boceto` no postprocesan. `assetgen 3d` suelto no postprocesa (solo `construir`).
 ## Que hace por dentro
 
 1. Elige GPU de la lista con precio <= tope (consulta `runpodctl gpu list`). Si un pod no obtiene SSH en 15 minutos (o entra en error), lo borra

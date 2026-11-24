@@ -19,6 +19,55 @@ def sub_objeto(src, faces_mask, name):
     ob = bpy.data.objects.new(name, nm); bpy.context.scene.collection.objects.link(ob)
     return ob
 
+def normales_afuera(ob, tol=1e-4, umbral_vol=2e-3):
+    """Orienta hacia fuera las caras de una pieza separada. Las islas UV (charts) no sirven para decidir el sentido
+    (cada isla suelta saldria al azar): se sueldan vertices coincidentes (tolerancia relativa a la pieza), se calcula el
+    volumen con signo de cada componente soldada y, si es negativo (normales hacia dentro), se voltean todas sus caras
+    (y sus normales personalizadas). Las componentes abiertas/planas (|volumen| casi nulo) no se tocan.
+    Devuelve el numero de caras volteadas."""
+    me = ob.data
+    n_v, n_f = len(me.vertices), len(me.polygons)
+    if n_f == 0:
+        return 0
+    co = coords(me)
+    tri_l = me.loop_triangles
+    tri = np.empty(len(tri_l) * 3, dtype=np.int64); tri_l.foreach_get('vertices', tri); tri = tri.reshape(-1, 3)
+    pol = np.empty(len(tri_l), dtype=np.int64); tri_l.foreach_get('polygon_index', pol)
+    diag = max(float(np.ptp(co, axis=0).max()), 1e-9)
+    key = np.round(co / (tol * diag)).astype(np.int64)
+    _, inv = np.unique(key, axis=0, return_inverse=True)
+    lab = charts_de(int(inv.max()) + 1, inv[tri])
+    lt = lab[inv[tri[:, 0]]]
+    v0, v1, v2 = co[tri[:, 0]], co[tri[:, 1]], co[tri[:, 2]]
+    vol6 = np.einsum('ij,ij->i', v0, np.cross(v1, v2))
+    vol = np.bincount(lt, weights=vol6, minlength=int(lt.max()) + 1) / 6.0
+    bbox_vol = float(np.prod(np.maximum(np.ptp(co, axis=0), 1e-9)))
+    # solo componentes cerradas (cada arista compartida por 2 caras): en las abiertas el signo del volumen no significa nada
+    ti = inv[tri]
+    e = np.sort(np.concatenate([ti[:, [0, 1]], ti[:, [1, 2]], ti[:, [2, 0]]]), axis=1)
+    elab = np.concatenate([lt, lt, lt])
+    ek, ecnt = np.unique(np.concatenate([e, elab[:, None]], axis=1), axis=0, return_counts=True)
+    abierta = np.zeros(len(vol), bool)
+    abierta[ek[ecnt != 2, 2]] = True
+    flip_comp = (vol < -umbral_vol * bbox_vol * 0.05) & ~abierta
+    # el sentido de cada cara lo decide su componente; una cara = varios triangulos de la misma componente
+    flip_face = np.zeros(n_f, bool)
+    flip_face[pol[flip_comp[lt]]] = True
+    nflip = int(flip_face.sum())
+    if nflip == 0:
+        return 0
+    cn = np.array([c.vector[:] for c in me.corner_normals]) if me.has_custom_normals else None
+    bm = bmesh.new(); bm.from_mesh(me); bm.faces.ensure_lookup_table()
+    for i in np.where(flip_face)[0]:
+        bm.faces[i].normal_flip()
+    bm.to_mesh(me); bm.free()
+    if cn is not None:
+        lens = np.array([p.loop_total for p in me.polygons])
+        cn[np.repeat(flip_face, lens)] *= -1
+        me.normals_split_custom_set([tuple(v) for v in cn])
+    me.update()
+    return nflip
+
 def coords(me):
     v = np.empty(len(me.vertices) * 3); me.vertices.foreach_get('co', v); return v.reshape(-1, 3)
 
@@ -99,16 +148,37 @@ def _root(nombre):
     r = bpy.data.objects.new(nombre, None); bpy.context.scene.collection.objects.link(r); return r
 
 # ------------------------------------------------------------------ plantilla: vehiculo
+def limpia_ruedas(M, W, min_caras=12, verbose=True):
+    """Tras separar las ruedas por mayoría de chart: (1) los trozos cortados de una pieza grande del chasis (componente
+    soldada que solo en parte cae en la rueda) vuelven al chasis; (2) las islas diminutas completas (< min_caras caras)
+    se eliminan de toda la malla (motas). Devuelve la máscara de caras a descartar."""
+    fl = componentes_soldadas(M)
+    nfc = np.bincount(fl)
+    descarta = (nfc < min_caras)[fl]
+    for w in W:
+        f = w['faces']
+        en_rueda = np.bincount(fl[f], minlength=len(nfc))
+        principal = int(np.argmax(en_rueda))
+        trozo = (en_rueda > 0) & (en_rueda < 0.5 * nfc) & (np.arange(len(nfc)) != principal)   # fragmento de algo mayor
+        w['faces'] = f[~trozo[fl[f]] & ~descarta[f]]
+        if verbose and (trozo.sum() or descarta[f].sum()):
+            print("  rueda: %d fragmentos devueltos al chasis, %d caras de motas eliminadas" % (trozo.sum(), descarta[f].sum()))
+    if verbose: print("  motas eliminadas del modelo: %d caras (%d islas)" % (descarta.sum(), int((nfc < min_caras).sum())))
+    return descarta
+
 def vehiculo(entrada, salida, adelante=None):
     src, M, ori = preparar(entrada)
     fwd = np.array(adelante, float) if adelante is not None else ori['fwd']
     W = detecta_ruedas(M)
     if not W: raise RuntimeError("vehiculo: no se detectaron ruedas")
+    descarta = limpia_ruedas(M, W)
     wf = np.concatenate([w['faces'] for w in W])
     root = _root("vehiculo")
     objs = ruedas_a_objetos(src, M, W, fwd, root)
-    mask = np.ones(len(M.tri), bool); mask[wf] = False
+    for ob, _ in objs: print("  normales volteadas", ob.name, normales_afuera(ob))
+    mask = np.ones(len(M.tri), bool); mask[wf] = False; mask &= ~descarta
     chasis = sub_objeto(src, mask, "chasis"); chasis.parent = root
+    print("  normales volteadas chasis", normales_afuera(chasis))
     bpy.data.objects.remove(src)
     clip_rodar(objs)
     sc = bpy.context.scene; sc.render.fps = 30; sc.frame_start = 0; sc.frame_end = 60

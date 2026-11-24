@@ -1,6 +1,6 @@
 # assetgen.yaml de ejemplo. Las rutas de 'imagen' son relativas a este archivo.
 proyecto: rts-ejemplo
-preset: medio          # boceto | medio | alto (calidad del 3D)
+preset: medio          # boceto | medio | alto (3D en calidad + postproceso a quads 20k y normal map) | aaa (reservado)
 estilo: realista       # realista | estilizado | low-poly (sufijo de estilo para las imagenes; 'sufijo_estilo' lo reemplaza)
 camara: lejana         # lejana (RTS) | tercera-persona | primer-plano
 presupuesto_poligonos: 50000

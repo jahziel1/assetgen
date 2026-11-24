@@ -10,6 +10,8 @@ La variable ASSETGEN_CONFIG cambia la ruta del archivo; el registro global vive 
 """
 import datetime, json, os, shutil, sys
 
+from .yamlmini import leer
+
 RUTA = os.environ.get("ASSETGEN_CONFIG") or os.path.expanduser("~/.config/assetgen/config.yaml")
 BLENDER_MAC = "/Applications/Blender 5.3.app/Contents/MacOS/Blender"
 
@@ -26,12 +28,16 @@ def cargar():
     r = ruta_global()
     if not os.path.exists(r):
         return {}
-    try:
-        import yaml
-        with open(r) as f:
-            return yaml.safe_load(f) or {}
-    except Exception as e:
-        raise SystemExit(f"No se pudo leer {r}: {e}")
+    cfg = leer(r) or {}      # si existe pero no se puede leer, falla en voz alta (no seguir sin tope)
+    if not isinstance(cfg, dict):
+        raise SystemExit(f"No se pudo leer {r}: se esperaba un mapa de claves")
+    tope = cfg.get("tope_mensual_usd")
+    if tope is not None:
+        try:
+            float(tope)
+        except (TypeError, ValueError):
+            raise SystemExit(f"{r}: tope_mensual_usd no es un numero ({tope!r})")
+    return cfg
 
 
 def blender_exe():

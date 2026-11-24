@@ -1,6 +1,8 @@
 """Lectura de assetgen.yaml."""
 import os
 
+from .yamlmini import leer
+
 TIPOS = ("humanoide", "mecanico", "criatura")   # tipos con pipeline completo; otros (edificio, objeto...) solo imagen + 3D
 PLANTILLAS = ("vehiculo", "catapulta", "rotor")
 
@@ -19,13 +21,15 @@ TIPO_SUFIJO_DEF = ", full body, centered"
 
 
 def cargar(ruta):
-    try:
-        import yaml
-    except ImportError:
-        raise SystemExit("Falta PyYAML: pip install pyyaml (o pip install -e cli/)")
-    with open(ruta) as f:
-        cfg = yaml.safe_load(f) or {}
+    cfg = leer(ruta) or {}
+    if not isinstance(cfg, dict):
+        raise SystemExit(f"{ruta}: se esperaba un mapa de claves")
+    if not isinstance(cfg.get("assets") or [], list) or not all(isinstance(a, dict) for a in cfg.get("assets") or []):
+        raise SystemExit(f"{ruta}: 'assets' debe ser una lista de mapas")
+    cfg["assets"] = cfg.get("assets") or []
     cfg.setdefault("preset", "medio")
+    if cfg["preset"] not in ("boceto", "medio", "alto", "aaa"):
+        raise SystemExit(f"{ruta}: preset desconocido '{cfg['preset']}' (boceto|medio|alto|aaa)")
     cfg.setdefault("assets", [])
     base = os.path.dirname(os.path.abspath(ruta))
     cfg["_base"] = base

@@ -214,7 +214,7 @@ def main(argv=None):
     p3 = sub.add_parser("3d", help="imagen -> GLB con TRELLIS.2")
     p3.add_argument("--input", help="carpeta con PNG/JPG/WEBP")
     p3.add_argument("--config", help="assetgen.yaml (usa los assets con 'imagen')")
-    p3.add_argument("--preset", choices=list(PRESETS_3D), help="boceto|medio|alto (def.: el del yaml o medio)")
+    p3.add_argument("--preset", choices=list(PRESETS_3D), help="boceto|medio|alto (def.: el del yaml o medio; 3d no postprocesa: usa `construir` para el postproceso del preset alto)")
     comunes(p3); p3.set_defaults(fn=cmd_3d)
 
     pr = sub.add_parser("rig", help="GLB -> GLB riggeado con Puppeteer")
@@ -232,7 +232,8 @@ def main(argv=None):
     pc.add_argument("--imagenes", required=True, help="carpeta de `assetgen imagenes` (con seleccion.yaml)")
     pc.add_argument("--seleccion", help="seleccion.yaml alterno (def.: <imagenes>/seleccion.yaml)")
     pc.add_argument("--solo", help="solo estos assets (separados por coma)")
-    pc.add_argument("--preset", choices=list(PRESETS_3D), help="boceto|medio|alto (def.: el del yaml)")
+    pc.add_argument("--preset", choices=PRESETS_TODOS, help="boceto|medio|alto|aaa (def.: el del yaml). alto = 3D en calidad + quads 20k + normal map; aaa reservado")
+    pc.add_argument("--seco", action="store_true", help="solo valida config, entradas y tope mensual y muestra el plan; no enciende nada ni escribe salida")
     comunes(pc); pc.set_defaults(fn=cmd_construir)
 
     sub.add_parser("gasto", help="gasto del mes (todos los proyectos) y tope mensual").set_defaults(fn=cmd_gasto)
