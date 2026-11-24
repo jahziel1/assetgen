@@ -24,6 +24,10 @@ PRESETS_3D = {
     #       (~20k) + normal map y ORM horneados a 2048. Va ANTES del rig y de las plantillas.
     "alto": {"env": {"PIPELINE_TYPE": "1024_cascade", "TEX_SIZE": "4096", "DECIM": "150000"}, "seg_asset": 150,
              "post": {"caras": 20000, "tex": 2048}},
+    # maximo: solo `assetgen 3d` (construir lo rechaza). Resolucion de voxel 1536 (baja sola si hay demasiados tokens), ~1M caras,
+    #         textura 4096. Mucha mas VRAM y tiempo que `alto`; sin postproceso (el GLB sale crudo, para evaluar o remesh a mano).
+    "maximo": {"env": {"PIPELINE_TYPE": "1536_cascade", "TEX_SIZE": "4096", "DECIM": "1000000", "MAX_GLB_MB": "400"}, "seg_asset": 220,
+               "solo_3d": True},
 }
 # Presets reservados: se aceptan en la linea de comandos y el yaml pero construir se niega a correrlos (no hay GPU ni receta aun).
 PRESETS_RESERVADOS = ("aaa",)

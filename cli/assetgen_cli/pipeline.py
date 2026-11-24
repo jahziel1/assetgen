@@ -290,6 +290,8 @@ def cmd_construir(args):
         raise SystemExit(f"El preset '{preset}' esta reservado y aun no se puede correr (usa boceto|medio|alto)")
     if preset not in PRESETS_3D:
         raise SystemExit(f"preset desconocido '{preset}' (boceto|medio|alto)")
+    if PRESETS_3D[preset].get("solo_3d"):
+        raise SystemExit(f"El preset '{preset}' solo sirve para `assetgen 3d` (sin postproceso ni rig); usa boceto|medio|alto")
     post = PRESETS_3D[preset].get("post")
 
     # ---- validar todo ANTES de gastar

@@ -18,6 +18,27 @@ def _guardar_stats(out, datos):
 
 
 # ---------------------------------------------------------------- 3d
+SUFIJOS_VISTA = ("_lado", "_espalda")
+
+
+def planear_3d(imagenes, semillas=None, multivista=False):
+    """imagenes {nombre: ruta} -> (base, extras, salidas). Con multivista, `<n>_lado` y `<n>_espalda` son vistas extra de `<n>` (no assets).
+    salidas {nombre_base: [nombres de GLB esperados]}: `<n>.glb` sin semillas; `<n>_s<semilla>.glb` con ellas; `<n>_multi.glb` si hay las 2 vistas."""
+    extras = {}
+    if multivista:
+        for n in list(imagenes):
+            for suf in SUFIJOS_VISTA:
+                if n.endswith(suf) and n[: -len(suf)] in imagenes:
+                    extras[n] = imagenes.pop(n)
+    salidas = {}
+    for n in imagenes:
+        sal = [f"{n}_s{x}" for x in semillas] if semillas else [n]
+        if multivista and all(n + suf in extras for suf in SUFIJOS_VISTA):
+            sal.append(n + "_multi")
+        salidas[n] = sal
+    return imagenes, extras, salidas
+
+
 def cmd_3d(args):
     preset, imagenes = args.preset, {}
     if args.config:
@@ -37,17 +58,26 @@ def cmd_3d(args):
                 imagenes.setdefault(os.path.splitext(os.path.basename(f))[0], f)
     preset = preset or "medio"
     if preset not in PRESETS_3D:
-        raise SystemExit(f"preset desconocido '{preset}' (boceto|medio|alto)")
+        raise SystemExit(f"preset desconocido '{preset}' (boceto|medio|alto|maximo)")
     out = os.path.abspath(args.out); os.makedirs(out, exist_ok=True)
-    pendientes = {n: f for n, f in imagenes.items() if args.forzar or not os.path.exists(os.path.join(out, n + ".glb"))}
+    semillas = [int(x) for x in args.semillas.split(",") if x.strip()] if args.semillas else []
+    imagenes, extras, salidas = planear_3d(imagenes, semillas, args.multivista)
+    pendientes = {n: f for n, f in imagenes.items()
+                  if args.forzar or not all(os.path.exists(os.path.join(out, g + ".glb")) for g in salidas[n])}
     if len(pendientes) < len(imagenes):
-        log(f"ya existen {len(imagenes) - len(pendientes)} glb en la salida; no se regeneran (usa --forzar)")
+        log(f"ya existen los glb de {len(imagenes) - len(pendientes)} asset(s) en la salida; no se regeneran (usa --forzar)")
     if not pendientes:
         log("nada que generar"); return 0
+    extra_env = {}
+    if semillas:
+        extra_env["SEEDS"] = ",".join(str(x) for x in semillas)
+    if args.multivista:
+        extra_env["MULTIVISTA"] = "1"
+    n_salidas = sum(len(salidas[n]) for n in pendientes)
 
     c = _candidatas(args)
     p = PRESETS_3D[preset]
-    seg = ARRANQUE_EST + 90 + len(pendientes) * p["seg_asset"]
+    seg = ARRANQUE_EST + 90 + n_salidas * p["seg_asset"]
     _revisar_presupuesto(args, c, seg)
     if args.dry_run:
         log("dry-run: candidatas " + ", ".join(f"{n} ${pr:.2f}" for _, n, pr, _ in c)); return 0
@@ -55,12 +85,15 @@ def cmd_3d(args):
     stage = tempfile.mkdtemp(prefix="assetgen-in-")
     for n, f in pendientes.items():
         shutil.copy(f, os.path.join(stage, n + os.path.splitext(f)[1].lower()))
+        for suf in SUFIJOS_VISTA:
+            if n + suf in extras:
+                shutil.copy(extras[n + suf], os.path.join(stage, n + suf + os.path.splitext(extras[n + suf])[1].lower()))
     t = {}
     try:
         with Sesion("3d", IMG_TRELLIS, c, args.disco, out, max_min=args.max_min, presupuesto=args.presupuesto, espera_ssh=args.timeout_arranque * 60,
                     comando=f"3d preset={preset} n={len(pendientes)}") as s:
             t0 = s.t_crear
-            _fase_3d(s, preset, stage, out, t, t0)
+            _fase_3d(s, preset, stage, out, t, t0, extra_env)
             gpu, precio = s.gpu, s.precio_h
     finally:
         shutil.rmtree(stage, ignore_errors=True)
@@ -70,16 +103,16 @@ def cmd_3d(args):
         assets = json.load(open(os.path.join(out, "stats.json")))
     except Exception:
         pass
-    _guardar_stats(out, {"preset": preset, "parametros": p["env"], "gpu": gpu, "precio_h": precio, "tiempos_s": t,
+    _guardar_stats(out, {"preset": preset, "parametros": {**p["env"], **extra_env}, "gpu": gpu, "precio_h": precio, "tiempos_s": t,
                          "costo_usd": s.costo_total, "assets": assets})
     log(f"listo: {len(rutas)} glb en {out}; tiempos {t}")
     return 0
 
 
-def _fase_3d(s, preset, stage, out, t, t0):
+def _fase_3d(s, preset, stage, out, t, t0, extra_env=None):
     """Dentro de una Sesion: sube las imagenes de `stage`, baja pesos de TRELLIS.2, genera y baja los GLB a `out`."""
     p = PRESETS_3D[preset]
-    env = " ".join(f"{k}={v}" for k, v in p["env"].items())
+    env = " ".join(f"{k}={v}" for k, v in {**p["env"], **(extra_env or {})}.items())
     s.subir(stage, sorted(os.listdir(stage)), "/root/in")
     s.subir_archivo(os.path.join(RAIZ_REPO, "scripts", "run_trellis2.py"), "/root/run_trellis2_local.py")
     log("descargando pesos (prepare_weights.sh trellis2)")
@@ -296,7 +329,9 @@ def main(argv=None):
     p3 = sub.add_parser("3d", help="imagen -> GLB con TRELLIS.2")
     p3.add_argument("--input", help="carpeta con PNG/JPG/WEBP")
     p3.add_argument("--config", help="assetgen.yaml (usa los assets con 'imagen')")
-    p3.add_argument("--preset", choices=list(PRESETS_3D), help="boceto|medio|alto (def.: el del yaml o medio; 3d no postprocesa: usa `construir` para el postproceso del preset alto)")
+    p3.add_argument("--preset", choices=list(PRESETS_3D), help="boceto|medio|alto|maximo (def.: el del yaml o medio; 3d no postprocesa: usa `construir` para el postproceso del preset alto; maximo = voxel 1536, ~1M caras, textura 4096)")
+    p3.add_argument("--semillas", help="semillas separadas por coma (ej. 42,7): una salida <nombre>_s<semilla>.glb por semilla")
+    p3.add_argument("--multivista", action="store_true", help="EXPERIMENTAL: <n>_lado.png y <n>_espalda.png son vistas de <n>.png; ademas escribe <n>_multi.glb (TRELLIS.2 no trae multi-imagen oficial: se concatenan los tokens DINOv3 de las vistas)")
     comunes(p3); p3.set_defaults(fn=cmd_3d)
 
     pr = sub.add_parser("rig", help="GLB -> GLB riggeado con Puppeteer")
