@@ -10,8 +10,8 @@ on:
   workflow_dispatch:
     inputs:
       models:
-        description: 'Modelos a construir (JSON)'
-        default: '["trellis2","hunyuan","puppeteer","qwen","zimage"]'
+        description: 'Imagenes a construir (JSON): imagen y 3d (nuevas); trellis2, puppeteer, qwen, zimage, hunyuan (viejas)'
+        default: '["imagen","3d"]'
 
 permissions:
   contents: read
@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: ${{ fromJSON(inputs.models || '["trellis2","hunyuan","puppeteer","qwen","zimage"]') }}
+        model: ${{ fromJSON(inputs.models || '["imagen","3d"]') }}
     steps:
       - name: Liberar disco
         uses: jlumbroso/free-disk-space@v1.3.1

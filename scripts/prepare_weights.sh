@@ -36,12 +36,12 @@ case "$MODEL" in
     (cd animation && python download.py)
     ;;
   qwen)
-    PY=/root/venv-qwen/bin/python
+    PY=/root/venv-imagen/bin/python; [ -x "$PY" ] || PY=/root/venv-qwen/bin/python   # imagen unificada o imagen vieja
     # Qwen-Image base (~57 GB) + LoRA Lightning 8 pasos V2.0 bf16 (Apache 2.0, no gated)
     $PY -c 'from huggingface_hub import snapshot_download as s, hf_hub_download as h; s("Qwen/Qwen-Image"); h("lightx2v/Qwen-Image-Lightning","Qwen-Image-Lightning-8steps-V2.0-bf16.safetensors")'
     ;;
   zimage)
-    PY=/root/venv-zimage/bin/python
+    PY=/root/venv-imagen/bin/python; [ -x "$PY" ] || PY=/root/venv-zimage/bin/python   # imagen unificada o imagen vieja
     # Z-Image-Turbo (Apache 2.0, no gated) + ControlNet oficial Fun-Controlnet-Union-2.1 (Apache 2.0), archivo 2602-8steps (pose)
     $PY -c 'from huggingface_hub import snapshot_download as s, hf_hub_download as h; s("Tongyi-MAI/Z-Image-Turbo", allow_patterns=["*.json","*.txt","*.safetensors","*.jinja"], ignore_patterns=["assets/*"]); h("alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1","Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors")'
     ;;
