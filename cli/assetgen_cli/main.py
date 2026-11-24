@@ -1,0 +1,257 @@
+"""assetgen: comando unico. Subcomandos: 3d, rig, estado, limpiar."""
+import argparse, glob, json, os, shutil, sys, tempfile, time
+
+from . import runpod as rp
+from .presets import *
+from .sesion import Sesion, Abortado, log
+
+RAIZ_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def _candidatas(args, min_gb=0, solo48=False):
+    orden = list(MODOS_GPU[args.modo])
+    if solo48:
+        orden = [g for g in orden if g in GPU_48]
+    if args.gpu:  # lista explicita separada por comas (gpuId completo)
+        orden = [g.strip() for g in args.gpu.split(",")]
+    c = rp.elegir_candidatas(orden, args.tope, args.nube.upper(), min_gb)
+    if not c:
+        raise SystemExit(f"Ninguna GPU disponible con precio <= ${args.tope}/h en la lista. Prueba --tope o --nube any.")
+    return c
+
+
+def _estimar(c, seg_total):
+    precio = c[0][2]
+    return precio * seg_total / 3600
+
+
+def _revisar_presupuesto(args, c, seg_total):
+    est = _estimar(c, seg_total)
+    log(f"estimacion: ~{seg_total / 60:.0f} min x ${c[0][2]:.2f}/h = ${est:.2f}")
+    if args.presupuesto is not None and est > args.presupuesto:
+        raise SystemExit(f"Abortado antes de encender: estimacion ${est:.2f} excede el presupuesto ${args.presupuesto:.2f}")
+    return est
+
+
+def _guardar_stats(out, datos):
+    with open(os.path.join(out, "stats.json"), "w") as f:
+        json.dump(datos, f, indent=1, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------- 3d
+def cmd_3d(args):
+    preset, imagenes = args.preset, {}
+    if args.config:
+        from .config import cargar
+        cfg = cargar(args.config)
+        preset = args.preset or cfg["preset"]
+        for a in cfg["assets"]:
+            if a.get("tipo") == "rig-solo":
+                continue
+            if a.get("imagen"):
+                imagenes[a["nombre"]] = a["imagen"]
+            else:
+                log(f"AVISO: '{a['nombre']}' solo tiene prompt; falta generar su imagen (assetgen imagenes: pendiente). Se omite.")
+    if args.input:
+        for f in sorted(glob.glob(os.path.join(args.input, "*"))):
+            if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                imagenes.setdefault(os.path.splitext(os.path.basename(f))[0], f)
+    preset = preset or "medio"
+    if preset not in PRESETS_3D:
+        raise SystemExit(f"preset desconocido '{preset}' (boceto|medio|alto)")
+    out = os.path.abspath(args.out); os.makedirs(out, exist_ok=True)
+    pendientes = {n: f for n, f in imagenes.items() if args.forzar or not os.path.exists(os.path.join(out, n + ".glb"))}
+    if len(pendientes) < len(imagenes):
+        log(f"ya existen {len(imagenes) - len(pendientes)} glb en la salida; no se regeneran (usa --forzar)")
+    if not pendientes:
+        log("nada que generar"); return 0
+
+    c = _candidatas(args)
+    p = PRESETS_3D[preset]
+    seg = ARRANQUE_EST + 90 + len(pendientes) * p["seg_asset"]
+    _revisar_presupuesto(args, c, seg)
+    if args.dry_run:
+        log("dry-run: candidatas " + ", ".join(f"{n} ${pr:.2f}" for _, n, pr, _ in c)); return 0
+
+    stage = tempfile.mkdtemp(prefix="assetgen-in-")
+    for n, f in pendientes.items():
+        shutil.copy(f, os.path.join(stage, n + os.path.splitext(f)[1].lower()))
+    env = " ".join(f"{k}={v}" for k, v in p["env"].items())
+    t = {}
+    try:
+        with Sesion("3d", IMG_TRELLIS, c, args.disco, out, max_min=args.max_min, presupuesto=args.presupuesto, espera_ssh=args.timeout_arranque * 60,
+                    comando=f"3d preset={preset} n={len(pendientes)}") as s:
+            t0 = s.t_crear
+            s.subir(stage, sorted(os.listdir(stage)), "/root/in")
+            s.subir_archivo(os.path.join(RAIZ_REPO, "scripts", "run_trellis2.py"), "/root/run_trellis2_local.py")
+            log("descargando pesos (prepare_weights.sh trellis2)")
+            s.ssh("/opt/assetgen/prepare_weights.sh trellis2")
+            t["pesos_listos"] = round(time.time() - t0, 1)
+            log(f"pesos listos a los {t['pesos_listos']} s del pod")
+            tg = time.time()
+            log(f"generando ({preset}: {env})")
+            s.ssh(f"mkdir -p /root/out/trellis2 && cd /root && {env} flock /root/gpu.lock /root/venv-trellis2/bin/python /root/run_trellis2_local.py /root/in /root/out/trellis2")
+            t["generacion"] = round(time.time() - tg, 1)
+            s.bajar("/root/out/trellis2", out)
+            t["total_pod"] = round(time.time() - t0, 1)
+            t["ssh_listo"] = s.hitos.get("ssh_listo")
+            t["arranque"] = t["pesos_listos"]
+            gpu, precio = s.gpu, s.precio_h
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    rutas = sorted(glob.glob(os.path.join(out, "*.glb")))
+    assets = []
+    try:
+        assets = json.load(open(os.path.join(out, "stats.json")))
+    except Exception:
+        pass
+    _guardar_stats(out, {"preset": preset, "parametros": p["env"], "gpu": gpu, "precio_h": precio, "tiempos_s": t,
+                         "costo_usd": s.costo_total, "assets": assets})
+    log(f"listo: {len(rutas)} glb en {out}; tiempos {t}")
+    return 0
+
+
+# ---------------------------------------------------------------- rig
+RIG_RECOGER = r"""mkdir -p /root/out; cp /root/work/*/*_rigged.glb /root/out/ 2>/dev/null; python3 - <<'PY'
+import json, glob
+d = {}
+for f in sorted(glob.glob('/root/stats/*.json')):
+    j = json.load(open(f)); d[j['stage']] = {k: v for k, v in j.items() if k != 'stage'}
+json.dump(d, open('/root/out/etapas.json', 'w'), indent=1)
+PY
+ls /root/out"""
+
+
+def cmd_rig(args):
+    glbs = sorted(glob.glob(os.path.join(args.input, "*.glb")))
+    if not glbs:
+        raise SystemExit(f"No hay .glb en {args.input}")
+    out = os.path.abspath(args.out); os.makedirs(out, exist_ok=True)
+    pend = [g for g in glbs if args.forzar or not os.path.exists(os.path.join(out, os.path.basename(g)[:-4] + "_rigged.glb"))]
+    if not pend:
+        log("nada que riggear (ya existen los *_rigged.glb)"); return 0
+    c = _candidatas(args, min_gb=40)
+    seg = ARRANQUE_EST + 120 + len(pend) * RIG_SEG_ASSET
+    _revisar_presupuesto(args, c, seg)
+    if args.dry_run:
+        log("dry-run: candidatas " + ", ".join(f"{n} ${pr:.2f}" for _, n, pr, _ in c)); return 0
+    t = {}
+    with Sesion("rig", IMG_PUPPETEER, c, args.disco, out, max_min=args.max_min, presupuesto=args.presupuesto, espera_ssh=args.timeout_arranque * 60,
+                comando=f"rig n={len(pend)}") as s:
+        t0 = s.t_crear
+        s.subir(args.input, [os.path.basename(g) for g in pend], "/root/in")
+        log("descargando pesos (prepare_weights.sh puppeteer)")
+        s.ssh("/opt/assetgen/prepare_weights.sh puppeteer")
+        t["pesos_listos"] = round(time.time() - t0, 1)
+        tg = time.time()
+        fallos = []
+        for g in pend:
+            n = os.path.basename(g)[:-4]
+            log(f"rig {n}")
+            rc = s.ssh(f"cd /root && /root/rig.sh {n} /root/in/{n}.glb", check=False)
+            # bpy suele terminar con segfault DESPUES de exportar: manda la existencia del GLB, no el codigo de salida
+            if s.ssh(f"test -s /root/work/{n}/{n}_rigged.glb", check=False) != 0:
+                fallos.append(n)
+            elif rc != 0:
+                log(f"aviso: rig.sh de {n} salio con rc={rc} pero el GLB riggeado existe (segfault de bpy al cerrar)")
+        t["generacion"] = round(time.time() - tg, 1)
+        s.ssh(RIG_RECOGER)
+        s.bajar("/root/out", out)
+        t["total_pod"] = round(time.time() - t0, 1)
+        t["ssh_listo"] = s.hitos.get("ssh_listo"); t["arranque"] = t["pesos_listos"]
+        gpu, precio = s.gpu, s.precio_h
+    etapas = {}
+    try:
+        etapas = json.load(open(os.path.join(out, "etapas.json")))
+    except Exception:
+        pass
+    _guardar_stats(out, {"gpu": gpu, "precio_h": precio, "tiempos_s": t, "costo_usd": s.costo_total,
+                         "fallos": fallos, "etapas": etapas})
+    log(f"listo: {len(glob.glob(os.path.join(out, '*_rigged.glb')))} glb riggeados en {out}; tiempos {t}")
+    return 1 if fallos else 0
+
+
+# ---------------------------------------------------------------- estado / limpiar
+def cmd_estado(args):
+    pods = rp.list_pods()
+    if not pods:
+        print("Sin pods de assetgen."); return 0
+    tot = 0.0
+    for p in pods:
+        h = rp.costo_hora(p); tot += h
+        print(f"{p.get('id')}  {p.get('name')}  {p.get('gpuId') or ''}  "
+              f"{p.get('runtimeStatus') or p.get('desiredStatus')}  ${h:.2f}/h  creado {p.get('createdAt', '?')}")
+    print(f"Total: {len(pods)} pod(s), ${tot:.2f}/h")
+    return 0
+
+
+def cmd_limpiar(args):
+    pods = rp.list_pods()
+    if not pods:
+        print("Nada que limpiar."); return 0
+    malos = 0
+    for p in pods:
+        ok = rp.delete_pod(p["id"])
+        print(f"{p['id']} {p.get('name')}: {'borrado' if ok else 'NO SE PUDO BORRAR'}")
+        malos += 0 if ok else 1
+    return 1 if malos else 0
+
+
+# ---------------------------------------------------------------- prueba de infraestructura (oculto)
+def cmd_smoke(args):
+    c = rp.elegir_candidatas(MODOS_GPU["normal"][::-1], args.tope, "SECURE")
+    out = os.path.abspath(args.out)
+    with Sesion("smoke", args.imagen, c, 30, out, max_min=10, presupuesto=args.presupuesto, espera_ssh=args.espera, comando="smoke") as s:
+        s.ssh("nvidia-smi --query-gpu=name,memory.total --format=csv,noheader; python3 --version; which flock curl tar; free -g | sed -n 2p; ls /opt/assetgen 2>&1 | head -20")
+        d = tempfile.mkdtemp(); open(os.path.join(d, "a.txt"), "w").write("hola\n")
+        s.subir(d, ["a.txt"], "/root/in"); s.ssh("cat /root/in/a.txt; pgrep -fa safety.sh | head -2")
+        s.bajar("/root/in", os.path.join(out, "bajado")); log("viaje de ida y vuelta ok")
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="assetgen", description="Genera assets 3D de juegos en GPUs rentadas (RunPod).")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def comunes(p):
+        p.add_argument("--out", required=True, help="carpeta de salida")
+        p.add_argument("--modo", choices=["normal", "rapido"], default="normal", help="lista de GPUs (normal: A6000 -> A40 -> L40S ...; rapido: L40S primero)")
+        p.add_argument("--tope", type=float, default=TOPE_PRECIO_H, help=f"precio maximo USD/h (def. {TOPE_PRECIO_H})")
+        p.add_argument("--gpu", help="lista explicita de gpuId separada por comas (sustituye al modo)")
+        p.add_argument("--nube", choices=["secure", "community", "any"], default="secure")
+        p.add_argument("--presupuesto", type=float, help="USD: aborta antes de encender si la estimacion lo excede y apaga si se supera")
+        p.add_argument("--max-min", type=int, default=60, help="minutos de vida maxima del pod (apagado de seguridad)")
+        p.add_argument("--timeout-arranque", type=int, default=15, help="minutos maximos hasta tener SSH (la imagen pesa ~11 GB); solo se descarta antes si el pod da error")
+        p.add_argument("--disco", type=int, default=80, help="disco del contenedor en GB")
+        p.add_argument("--forzar", action="store_true", help="regenerar aunque ya exista la salida")
+        p.add_argument("--dry-run", action="store_true", help="solo muestra GPU candidatas y estimacion")
+
+    p3 = sub.add_parser("3d", help="imagen -> GLB con TRELLIS.2")
+    p3.add_argument("--input", help="carpeta con PNG/JPG/WEBP")
+    p3.add_argument("--config", help="assetgen.yaml (usa los assets con 'imagen')")
+    p3.add_argument("--preset", choices=list(PRESETS_3D), help="boceto|medio|alto (def.: el del yaml o medio)")
+    comunes(p3); p3.set_defaults(fn=cmd_3d)
+
+    pr = sub.add_parser("rig", help="GLB -> GLB riggeado con Puppeteer")
+    pr.add_argument("--input", required=True, help="carpeta con .glb")
+    comunes(pr); pr.set_defaults(fn=cmd_rig)
+
+    sub.add_parser("estado", help="pods de assetgen encendidos y gasto por hora").set_defaults(fn=cmd_estado)
+    sub.add_parser("limpiar", help="borra todo pod assetgen-* que haya quedado").set_defaults(fn=cmd_limpiar)
+
+    ps = sub.add_parser("smoke"); ps.add_argument("--out", required=True); ps.add_argument("--tope", type=float, default=0.9)
+    ps.add_argument("--imagen", default="runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04")
+    ps.add_argument("--presupuesto", type=float, default=0.3); ps.add_argument("--espera", type=int, default=420)
+    ps.set_defaults(fn=cmd_smoke)
+
+    args = ap.parse_args(argv)
+    if args.cmd in ("3d", "rig") and args.cmd == "3d" and not (args.input or args.config):
+        ap.error("3d necesita --input o --config")
+    try:
+        return args.fn(args) or 0
+    except Abortado as e:
+        log(f"ABORTADO: {e}"); return 2
+    except KeyboardInterrupt:
+        log("interrumpido por el usuario (pod borrado)"); return 130
+    except rp.RunpodError as e:
+        log(f"ERROR: {e}"); return 1

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "assetgen"
+version = "0.1.0"
+description = "CLI para generar assets 3D de juegos en GPUs rentadas de RunPod (TRELLIS.2, Puppeteer)"
+requires-python = ">=3.9"
+dependencies = ["PyYAML"]
+
+[project.scripts]
+assetgen = "assetgen_cli.main:main"
+
+[tool.setuptools]
+packages = ["assetgen_cli"]

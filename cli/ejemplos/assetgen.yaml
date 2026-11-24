@@ -1,0 +1,24 @@
+# assetgen.yaml de ejemplo (un RTS pequeno). Las rutas de 'imagen' son relativas a este archivo.
+proyecto: rts-ejemplo
+preset: medio          # boceto | medio | alto
+estilo: realista       # realista | estilizado | low-poly (se usara al generar imagenes)
+camara: lejana         # lejana (RTS) | tercera-persona | primer-plano
+presupuesto_poligonos: 50000
+gpu_modo: normal       # normal | rapido
+
+assets:
+  - nombre: soldado
+    tipo: unidad
+    imagen: imagenes/soldado.png
+    animaciones: [caminar, atacar, morir]
+  - nombre: escorpion
+    tipo: criatura
+    imagen: imagenes/escorpion.png
+    animaciones: [caminar, atacar]
+  - nombre: catapulta
+    tipo: maquina
+    imagen: imagenes/catapulta.png
+    animaciones: []          # mecanica: se anima en Blender
+  - nombre: torre
+    tipo: edificio
+    prompt: "torre de vigilancia de madera, estilo medieval"   # sin imagen aun: se omite en 'assetgen 3d'
