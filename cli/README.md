@@ -17,7 +17,43 @@ cd cli && pip install -e .        # instala el comando `assetgen` (incluye PyYAM
 
 El CLI sube `scripts/run_trellis2.py` del repo al pod, asi que no hace falta reconstruir la imagen para probar cambios.
 
-## Uso
+## Pipeline completo (yaml -> final/<asset>.glb)
+
+```bash
+assetgen imagenes  --config assetgen.yaml --out proy/imagenes     # Qwen-Image Lightning: N variantes por asset (solo GPUs de 48 GB)
+# mira proy/imagenes/hoja_<asset>.png y edita proy/imagenes/seleccion.yaml (asset: variante, por defecto 1)
+assetgen construir --config assetgen.yaml --imagenes proy/imagenes --out proy/build
+# -> proy/build/final/<asset>.glb con sus clips, proy/build/resumen.json (asset, tipo, clips, caras, MB, costo)
+```
+
+`imagenes`: prompt del yaml + sufijo de estilo del proyecto (`estilo`: realista|estilizado|low-poly, o `sufijo_estilo`) + sufijo segun tipo
+(`humanoide`: "standing in A-pose with arms slightly away from the body, empty hands, full body"; `mecanico`/`criatura`: "full body, centered").
+Escribe `<asset>_v1..vN.png`, `hoja_<asset>.png` (<=1000 px), `seleccion.yaml` (no pisa elecciones existentes) y `prompts.yaml`.
+Usa `--variantes N` (def. 4) y `--solo a,b`. El pod tiene disco de >=100 GB (pesos de Qwen ~58 GB).
+
+`construir` valida todo antes de encender nada (imagenes, plantillas, rutas de Quaternius y Blender) y despues:
+1. `3d` con el preset del proyecto; el GLB se llama como el asset del yaml (`arquero.glb`), no como la imagen.
+2. `rig` (Puppeteer) **solo** para `humanoide` y `criatura`. El exito se decide por la existencia del GLB riggeado (bpy da segfault al cerrar).
+3. En local con Blender (`blender/`): `humanoide` -> `blender/retarget/retarget_ual.py` (clips Idle_Loop, Walk_Loop, Run_Loop, Sword_Attack, Death de
+   Quaternius UAL1); `mecanico` -> `blender/mecanica/animar_mecanico.py` con su `plantilla` (`vehiculo|catapulta|rotor`); `criatura` queda riggeada sin
+   clips; otros tipos quedan como el GLB de 3D.
+Es reanudable: no repite lo que ya existe (`--forzar` para rehacer). Intermedios en `<out>/3d`, `rig`, `retarget`, `mecanica`, `logs`.
+
+Verificacion visual de un final (reimporta, lista clips/texturas y renderiza una hoja de cuadros del clip principal):
+
+```bash
+blender -b -P blender/verificar_glb.py -- final/arquero.glb hoja.png [--clip Walk_Loop] [--n 6]
+```
+
+### Configuracion global (`~/.config/assetgen/config.yaml`, ver `ejemplos/config_global.yaml`)
+
+- `quaternius.ual1`: ruta a `UAL1_Standard.glb` (el pack no se redistribuye; tambien variable `ASSETGEN_UAL1`).
+- `blender`: ejecutable de Blender (o variable `BLENDER`, o `blender` en el PATH).
+- `tope_mensual_usd`: cada corrida suma el gasto del mes de **todos los proyectos** (`~/.config/assetgen/costos_global.jsonl`, donde se registra cada
+  costo ademas del `costos.jsonl` local) y, si lo superaria con la estimacion, pide confirmacion (`--si` para continuar sin preguntar; sin terminal aborta).
+  `assetgen gasto` muestra el total del mes. `ASSETGEN_CONFIG` cambia la ruta del archivo (y del registro global).
+
+## Uso de los subcomandos sueltos
 
 ```bash
 # Imagenes -> GLB con TRELLIS.2 (imagen ghcr.io/jahziel1/assetgen-trellis2)
@@ -70,10 +106,9 @@ Los pods se llaman `assetgen-*`; `estado` y `limpiar` solo tocan esos.
 
 ## assetgen.yaml
 
-Ver `ejemplos/assetgen.yaml`. Campos: `preset`, `estilo`, `camara`, `presupuesto_poligonos`, `gpu_modo` y la lista `assets`
-(`nombre`, `tipo`, `imagen` o `prompt`, `animaciones`). Por ahora `3d --config` usa `preset` y los assets con `imagen`;
-los que solo tienen `prompt` se omiten (la generacion de imagenes llegara como `assetgen imagenes`). Animacion guiada por
-video aun no esta en el CLI.
+Ver `ejemplos/assetgen.yaml`. Campos: `preset`, `estilo`, `sufijo_estilo`, `variantes`, `camara`, `presupuesto_poligonos`, `gpu_modo` y la lista `assets`
+(`nombre`, `tipo` = humanoide|mecanico|criatura|otro, `plantilla` (obligatoria en mecanico), `prompt` y/o `imagen`). `3d --config` usa los assets con `imagen`.
+Animacion guiada por video no esta en el CLI.
 
 ## Notas
 
@@ -95,3 +130,19 @@ video aun no esta en el CLI.
 | Costo | $0.147 | $0.109 |
 
 Cuando el host no tiene la imagen en cache el arranque puede tardar mas; por eso el limite por defecto es de 15 minutos.
+
+## Prueba de punta a punta del pipeline completo (2026-11-23, `pruebas4/e2e2`)
+
+yaml de 3 assets, preset `medio`: `arquero` (humanoide), `carreta` (mecanico, `vehiculo`), `molino` (mecanico, `rotor`).
+
+| Etapa | GPU | Tiempo | Costo |
+|---|---|---|---|
+| `imagenes` (3 x 4 variantes, Qwen Lightning) | A40 | 429 s (SSH 192 s, pesos 234 s, ~8.5 s/imagen en A40) | $0.070 |
+| `construir` -> 3d (3 assets) | A40 | 795 s (generacion 479 s) | $0.152 |
+| `construir` -> rig (solo el arquero; `rig.sh` salio con rc=139 por el segfault de bpy y se acepto por existir el GLB) | A40 | 549 s (generacion 87 s) | $0.089 |
+| Blender local (retarget / plantillas) | - | 7 s / 2 s / 2 s | 0 |
+| **Total** | | | **$0.311** |
+
+Resultados (reimportados en Blender con `blender/verificar_glb.py`): `arquero` 5 clips Quaternius, 52 huesos, textura 2048, 48k caras, 7.6 MB, camina bien;
+`carreta` clip `rodar` (4 ruedas giran en bucle) con la rueda lejana oscura y unas motas sueltas; `molino` clip `girar` con la plantilla `rotor` arrastrando
+trozos de la torre (ventana, techo) junto con las aspas: **falla parcialmente**.

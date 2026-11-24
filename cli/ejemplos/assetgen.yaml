@@ -1,24 +1,27 @@
-# assetgen.yaml de ejemplo (un RTS pequeno). Las rutas de 'imagen' son relativas a este archivo.
+# assetgen.yaml de ejemplo. Las rutas de 'imagen' son relativas a este archivo.
 proyecto: rts-ejemplo
-preset: medio          # boceto | medio | alto
-estilo: realista       # realista | estilizado | low-poly (se usara al generar imagenes)
+preset: medio          # boceto | medio | alto (calidad del 3D)
+estilo: realista       # realista | estilizado | low-poly (sufijo de estilo para las imagenes; 'sufijo_estilo' lo reemplaza)
 camara: lejana         # lejana (RTS) | tercera-persona | primer-plano
 presupuesto_poligonos: 50000
 gpu_modo: normal       # normal | rapido
+variantes: 4           # variantes de imagen por asset
 
+# tipo: humanoide  -> imagen en A-pose, rig (Puppeteer) y retarget de clips Quaternius UAL1 (Idle/Walk/Run/Sword_Attack/Death)
+#       mecanico   -> sin rig; animar_mecanico.py con 'plantilla': vehiculo | catapulta | rotor
+#       criatura   -> rig (Puppeteer), sin clips automaticos todavia
+#       otro       -> solo imagen + 3D
 assets:
   - nombre: soldado
-    tipo: unidad
-    imagen: imagenes/soldado.png
-    animaciones: [caminar, atacar, morir]
-  - nombre: escorpion
-    tipo: criatura
-    imagen: imagenes/escorpion.png
-    animaciones: [caminar, atacar]
+    tipo: humanoide
+    prompt: "roman legionary soldier with red tunic and helmet, sword at the belt"
   - nombre: catapulta
-    tipo: maquina
-    imagen: imagenes/catapulta.png
-    animaciones: []          # mecanica: se anima en Blender
+    tipo: mecanico
+    plantilla: catapulta
+    prompt: "medieval wooden catapult with wheels"
   - nombre: torre
     tipo: edificio
-    prompt: "torre de vigilancia de madera, estilo medieval"   # sin imagen aun: se omite en 'assetgen 3d'
+    prompt: "wooden watchtower, medieval style"
+  - nombre: escorpion
+    tipo: criatura
+    imagen: imagenes/escorpion.png     # ya tengo la imagen: se salta `assetgen imagenes`

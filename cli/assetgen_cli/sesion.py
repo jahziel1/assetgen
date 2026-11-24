@@ -259,4 +259,9 @@ class Sesion:
                 f.write(json.dumps(reg, ensure_ascii=False) + "\n")
         except OSError as e:
             log(f"no se pudo escribir costos.jsonl: {e}")
+        try:
+            from . import globalcfg
+            globalcfg.registrar({**reg, "salida": os.path.abspath(self.out_dir)})
+        except Exception as e:
+            log(f"no se pudo escribir el registro global de costos: {e}")
         log(f"costo de esta corrida: ${total:.3f} (registrado en costos.jsonl)")

@@ -1,36 +1,14 @@
-"""assetgen: comando unico. Subcomandos: 3d, rig, estado, limpiar."""
+"""assetgen: comando unico. Subcomandos: imagenes, construir, 3d, rig, estado, gasto, limpiar."""
 import argparse, glob, json, os, shutil, sys, tempfile, time
 
 from . import runpod as rp
 from .presets import *
 from .sesion import Sesion, Abortado, log
+from . import globalcfg
+from .pipeline import cmd_imagenes, cmd_construir
+from .comun import _candidatas, _estimar, _revisar_presupuesto
 
 RAIZ_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-
-
-def _candidatas(args, min_gb=0, solo48=False):
-    orden = list(MODOS_GPU[args.modo])
-    if solo48:
-        orden = [g for g in orden if g in GPU_48]
-    if args.gpu:  # lista explicita separada por comas (gpuId completo)
-        orden = [g.strip() for g in args.gpu.split(",")]
-    c = rp.elegir_candidatas(orden, args.tope, args.nube.upper(), min_gb)
-    if not c:
-        raise SystemExit(f"Ninguna GPU disponible con precio <= ${args.tope}/h en la lista. Prueba --tope o --nube any.")
-    return c
-
-
-def _estimar(c, seg_total):
-    precio = c[0][2]
-    return precio * seg_total / 3600
-
-
-def _revisar_presupuesto(args, c, seg_total):
-    est = _estimar(c, seg_total)
-    log(f"estimacion: ~{seg_total / 60:.0f} min x ${c[0][2]:.2f}/h = ${est:.2f}")
-    if args.presupuesto is not None and est > args.presupuesto:
-        raise SystemExit(f"Abortado antes de encender: estimacion ${est:.2f} excede el presupuesto ${args.presupuesto:.2f}")
-    return est
 
 
 def _guardar_stats(out, datos):
@@ -51,7 +29,7 @@ def cmd_3d(args):
             if a.get("imagen"):
                 imagenes[a["nombre"]] = a["imagen"]
             else:
-                log(f"AVISO: '{a['nombre']}' solo tiene prompt; falta generar su imagen (assetgen imagenes: pendiente). Se omite.")
+                log(f"AVISO: '{a['nombre']}' solo tiene prompt; falta generar su imagen (corre `assetgen imagenes`). Se omite.")
     if args.input:
         for f in sorted(glob.glob(os.path.join(args.input, "*"))):
             if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
@@ -185,6 +163,12 @@ def cmd_estado(args):
     return 0
 
 
+def cmd_gasto(args):
+    g = globalcfg.gasto_mes(); tope = globalcfg.cargar().get("tope_mensual_usd")
+    print(f"Gasto del mes: ${g:.2f}" + (f" de ${float(tope):.2f}" if tope is not None else " (sin tope mensual)") + f"  [{globalcfg.ruta_costos()}]")
+    return 0
+
+
 def cmd_limpiar(args):
     pods = rp.list_pods()
     if not pods:
@@ -225,6 +209,7 @@ def main(argv=None):
         p.add_argument("--disco", type=int, default=80, help="disco del contenedor en GB")
         p.add_argument("--forzar", action="store_true", help="regenerar aunque ya exista la salida")
         p.add_argument("--dry-run", action="store_true", help="solo muestra GPU candidatas y estimacion")
+        p.add_argument("--si", action="store_true", help="no pedir confirmacion si se superaria el tope mensual global")
 
     p3 = sub.add_parser("3d", help="imagen -> GLB con TRELLIS.2")
     p3.add_argument("--input", help="carpeta con PNG/JPG/WEBP")
@@ -236,6 +221,21 @@ def main(argv=None):
     pr.add_argument("--input", required=True, help="carpeta con .glb")
     comunes(pr); pr.set_defaults(fn=cmd_rig)
 
+    pi = sub.add_parser("imagenes", help="prompts del yaml -> N variantes por asset con Qwen-Image (hoja de contacto + seleccion.yaml)")
+    pi.add_argument("--config", required=True, help="assetgen.yaml")
+    pi.add_argument("--variantes", type=int, help="variantes por asset (def.: 'variantes' del yaml o 4)")
+    pi.add_argument("--solo", help="solo estos assets (separados por coma)")
+    comunes(pi); pi.set_defaults(fn=cmd_imagenes)
+
+    pc = sub.add_parser("construir", help="imagenes elegidas -> 3D -> rig (humanoide/criatura) -> Blender local -> final/<asset>.glb + resumen.json")
+    pc.add_argument("--config", required=True, help="assetgen.yaml")
+    pc.add_argument("--imagenes", required=True, help="carpeta de `assetgen imagenes` (con seleccion.yaml)")
+    pc.add_argument("--seleccion", help="seleccion.yaml alterno (def.: <imagenes>/seleccion.yaml)")
+    pc.add_argument("--solo", help="solo estos assets (separados por coma)")
+    pc.add_argument("--preset", choices=list(PRESETS_3D), help="boceto|medio|alto (def.: el del yaml)")
+    comunes(pc); pc.set_defaults(fn=cmd_construir)
+
+    sub.add_parser("gasto", help="gasto del mes (todos los proyectos) y tope mensual").set_defaults(fn=cmd_gasto)
     sub.add_parser("estado", help="pods de assetgen encendidos y gasto por hora").set_defaults(fn=cmd_estado)
     sub.add_parser("limpiar", help="borra todo pod assetgen-* que haya quedado").set_defaults(fn=cmd_limpiar)
 

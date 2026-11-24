@@ -1,0 +1,5 @@
+# Copiar a ~/.config/assetgen/config.yaml (configuracion del usuario, no del proyecto)
+tope_mensual_usd: 20     # opcional: pide confirmacion si el gasto del mes (todos los proyectos) + la estimacion lo supera
+# blender: /Applications/Blender 5.3.app/Contents/MacOS/Blender    # opcional; tambien variable BLENDER o 'blender' en el PATH
+quaternius:              # packs que NO se redistribuyen: cada usuario pone su ruta
+  ual1: ~/Downloads/Universal Animation Library[Standard]/Unreal-Godot/UAL1_Standard.glb
