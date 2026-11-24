@@ -172,3 +172,20 @@ yaml de 3 assets, preset `medio`: `arquero` (humanoide), `carreta` (mecanico, `v
 Resultados (reimportados en Blender con `blender/verificar_glb.py`): `arquero` 5 clips Quaternius, 52 huesos, textura 2048, 48k caras, 7.6 MB, camina bien;
 `carreta` clip `rodar` (4 ruedas giran en bucle) con la rueda lejana oscura y unas motas sueltas; `molino` clip `girar` con la plantilla `rotor` arrastrando
 trozos de la torre (ventana, techo) junto con las aspas: **falla parcialmente**.
+
+## Prueba de punta a punta con Z-Image + ControlNet y la nueva deteccion de arranque (2026-11-24, `pruebas4/e2e3`)
+
+`velador` (humanoide, `zimage`, `pose: a`, prompt literal), `lobo` y `caballo` (criatura, `qwen`); preset `medio`; todo en A6000 ($0.69/h).
+`imagenes` (un pod por modelo) -> eleccion manual de variante -> `construir`.
+
+| Etapa | Contenedor `running` | SSH listo (pod get + ssh) | Pesos listos | Generacion | Costo |
+|---|---|---|---|---|---|
+| imagenes zimage (1 x 4, 1536, ControlNet) | 154 s | 154.9 s | ~5 min | ~25-30 s/imagen | $0.078 |
+| imagenes qwen (2 x 4, 1328) | 146 s | 147.3 s | 376 s | ~4 min (8 imagenes) | $0.100 |
+| 3d (3 assets, medio) | 277 s | 279.4 s | 364 s | 407 s | $0.149 |
+| rig (3 assets) | 311 s | 314.0 s | ~1.5 min | 3 x ~80 s | $0.127 |
+| **Total** | | | | | **$0.454** |
+
+La deteccion con `pod get` + conexion SSH marco "listo" 1-3 s despues de que el contenedor paso a `running`, siempre con `fuente_listo: pod_get`
+(`ssh info` no hizo falta). Casi todo el arranque es la descarga de la imagen (~11 GB). Resultados: `velador` con 5 clips Quaternius (camina bien, 48k caras, 22 huesos
+en el rig), `lobo` y `caballo` riggeados con Puppeteer (41 y 38 huesos) sin clips; `rig.sh` salio con rc=139 (segfault de bpy al cerrar) y se acepto por existir el GLB.
