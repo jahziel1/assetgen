@@ -374,6 +374,7 @@ def main(argv=None):
     pk.add_argument("--vistas", help="carpeta con frente/lado/espalda del original (salida de `remaster analizar`; sirve su carpeta o su renders/). Obligatorio salvo con --base")
     pk.add_argument("--base", help="MODO REFINADO: carpeta con un concepto ya generado (v<n>_frente|lado|espalda.png) que se conserva y se eleva en realismo; las --referencias pasan a ser solo de material (orden: cara/piel, cuero+metal, tela)")
     pk.add_argument("--base-variante", type=int, default=1, help="con --base: numero de variante a refinar (v<n>_*.png), def. 1")
+    pk.add_argument("--cabeza", action="store_true", help="con --base: en vez del cuerpo, genera primeros planos de la CABEZA (frente/lado/espalda, 1024x1024) recortados de las 3 vistas base, para dar mas detalle de rostro a un paso 3D posterior; ignora --referencias")
     pk.add_argument("--referencias", nargs="+", default=[], help="OPCIONAL: imagenes (o carpetas) de referencia de estilo; ideal <= 3. Sin ellas el estilo sale solo del texto (--prompt y el estilo base)")
     pk.add_argument("--prompt", help="descripcion del personaje/estilo que se anade al prompt base (en ingles rinde mejor)")
     pk.add_argument("--variantes", type=int, default=4, help="variantes (semillas distintas), def. 4")

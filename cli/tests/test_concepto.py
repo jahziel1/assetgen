@@ -121,6 +121,101 @@ class Refinado(unittest.TestCase):
                 M.main(["remaster", "concepto", "--salida", os.path.join(d, "o2"), "--dry-run"])
 
 
+class Cabeza(unittest.TestCase):
+    def figura(self, ruta, tam=(768, 1328), cx=400):
+        """Figura sintetica sobre fondo blanco: cabeza (cuadrado rojo) arriba y cuerpo azul mas ancho debajo."""
+        from PIL import Image, ImageDraw
+        im = Image.new("RGB", tam, (255, 255, 255))
+        d = ImageDraw.Draw(im)
+        d.rectangle((cx - 40, 100, cx + 40, 180), fill=(200, 30, 30))
+        d.rectangle((cx - 120, 181, cx + 120, 1200), fill=(30, 30, 200))
+        im.save(ruta)
+
+    def test_recortar_cabeza(self):
+        from PIL import Image
+        d = tempfile.mkdtemp(); o, dst = os.path.join(d, "o.png"), os.path.join(d, "c.png")
+        self.figura(o)
+        caja, tam = C.recortar_cabeza(o, dst)
+        self.assertEqual(tam, (1024, 1024)); self.assertEqual(Image.open(dst).size, (1024, 1024))
+        alto = 1200 - 100 + 1
+        self.assertEqual(caja[2] - caja[0], caja[3] - caja[1])                           # cuadrado
+        self.assertAlmostEqual(caja[2] - caja[0], C.FRAC_CABEZA * alto, delta=2)
+        self.assertAlmostEqual((caja[0] + caja[2]) / 2, 400, delta=2)                    # centrado en la cabeza, no en el cuerpo
+        self.assertAlmostEqual(caja[1], 100 - 0.02 * alto, delta=2)                      # empieza cerca del tope
+        im = Image.open(dst)
+        self.assertEqual(im.getpixel((2, 2)), (255, 255, 255))
+        self.assertEqual(im.getpixel((512, 300)), (200, 30, 30))                         # la cabeza queda al centro-arriba
+        _, tam2 = C.recortar_cabeza(o, dst, lado=256)
+        self.assertEqual(tam2, (256, 256))
+
+    def test_recortar_ignora_motas(self):
+        from PIL import Image
+        d = tempfile.mkdtemp(); o, dst = os.path.join(d, "o.png"), os.path.join(d, "c.png")
+        self.figura(o)
+        im = Image.open(o); im.putpixel((700, 20), (0, 0, 0)); im.save(o)                # pixel suelto lejos de la figura
+        caja, _ = C.recortar_cabeza(o, dst)
+        self.assertAlmostEqual((caja[0] + caja[2]) / 2, 400, delta=2)
+        self.assertGreater(caja[1], 50)
+
+    def test_recortar_rellena_fuera(self):
+        from PIL import Image
+        d = tempfile.mkdtemp(); o, dst = os.path.join(d, "o.png"), os.path.join(d, "c.png")
+        self.figura(o, cx=30)                                                            # cabeza pegada al borde izquierdo
+        caja, _ = C.recortar_cabeza(o, dst)
+        self.assertLess(caja[0], 0)
+        im = Image.open(dst)
+        self.assertEqual(im.size, (1024, 1024)); self.assertEqual(im.getpixel((2, 500)), (255, 255, 255))
+
+    def test_plan_cabeza(self):
+        jobs = C.plan_trabajos(4, 3, "young prince", cabeza=True)
+        self.assertEqual(len(jobs), 12)
+        self.assertEqual([j["id"] for j in jobs[:6]], ["v1_frente", "v1_lado", "v1_espalda", "v2_frente", "v2_lado", "v2_espalda"])
+        self.assertEqual([j["seed"] for j in jobs[::3]], C.SEMILLAS_CABEZA)
+        self.assertEqual(jobs[0]["seed"], jobs[2]["seed"])
+        self.assertEqual(jobs[0]["imagenes"], [{"ref": "cabeza/frente.png"}])            # sin referencias
+        self.assertEqual(jobs[1]["imagenes"], [{"gen": "v1_frente"}, {"ref": "cabeza/lado.png"}])
+        self.assertEqual(jobs[8]["imagenes"], [{"gen": "v3_frente"}, {"ref": "cabeza/espalda.png"}])
+        self.assertFalse(any("refs/" in im.get("ref", "") for j in jobs for im in j["imagenes"]))
+
+    def test_prompts_cabeza(self):
+        p = C.prompt_cabeza_frente("young prince")
+        for t in ("mouth closed", "pure white", "low resolution", "exactly the same person", "young prince.", "55 to 65", "PBR"):
+            self.assertIn(t, p)
+        self.assertIn("profile", C.prompt_cabeza_vista("lado")); self.assertIn("pure white", C.prompt_cabeza_vista("lado"))
+        self.assertIn("mouth closed", C.prompt_cabeza_vista("espalda"))
+        self.assertIn("from behind", C.prompt_cabeza_vista("espalda")); self.assertIn("pure white", C.prompt_cabeza_vista("espalda"))
+        self.assertEqual(C.plan_trabajos(1, 0, cabeza=True)[1]["prompt"], C.prompt_cabeza_vista("lado"))
+
+    def test_hoja_cuadrada(self):
+        from PIL import Image
+        d = tempfile.mkdtemp(); base = {}
+        for v in C.VISTAS:
+            base[v] = os.path.join(d, "b_" + v + ".png"); Image.new("RGB", (1024, 1024), (9, 90, 9)).save(base[v])
+            Image.new("RGB", (1024, 1024), (90, 9, 9)).save(os.path.join(d, f"v1_{v}.png"))
+        im = Image.open(C.hoja_concepto(d, 1, os.path.join(d, "h.jpg"), base=base, cuadrada=True))
+        self.assertLessEqual(im.width, 1000); self.assertGreater(im.width, 950)
+        self.assertLess(im.height, 700)                                                  # 2 filas cuadradas, no 2 filas altas
+
+    def test_cabeza_sin_base_falla(self):
+        d = tempfile.mkdtemp(); v = os.path.join(d, "v"); os.makedirs(v)
+        for n in C.VISTAS:
+            imagen(os.path.join(v, n + ".png"))
+        with self.assertRaises(SystemExit) as e:
+            M.main(["remaster", "concepto", "--vistas", v, "--cabeza", "--salida", os.path.join(d, "o"), "--dry-run"])
+        self.assertIn("--base", str(e.exception))
+
+    def test_dry_run_cabeza(self):
+        from unittest import mock
+        d = tempfile.mkdtemp(); b = os.path.join(d, "b"); os.makedirs(b)
+        for n in C.VISTAS:
+            self.figura(os.path.join(b, f"v1_{n}.png"))
+        cand = [("id", "NVIDIA A40", 0.59, 48)]
+        with mock.patch.object(C, "_candidatas", return_value=cand), mock.patch.object(C, "Sesion", side_effect=AssertionError("no debe encender")):
+            rc = M.main(["remaster", "concepto", "--base", b, "--cabeza", "--variantes", "4", "--salida", os.path.join(d, "o"), "--dry-run"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(os.listdir(os.path.join(d, "o")), [])
+
+
 class Archivos(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
