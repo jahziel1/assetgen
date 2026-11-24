@@ -11,7 +11,7 @@ on:
     inputs:
       models:
         description: 'Modelos a construir (JSON)'
-        default: '["trellis2","hunyuan","puppeteer","qwen"]'
+        default: '["trellis2","hunyuan","puppeteer","qwen","zimage"]'
 
 permissions:
   contents: read
@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: ${{ fromJSON(inputs.models || '["trellis2","hunyuan","puppeteer","qwen"]') }}
+        model: ${{ fromJSON(inputs.models || '["trellis2","hunyuan","puppeteer","qwen","zimage"]') }}
     steps:
       - name: Liberar disco
         uses: jlumbroso/free-disk-space@v1.3.1
