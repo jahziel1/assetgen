@@ -256,4 +256,10 @@ assetgen remaster concepto --vistas analisis/ [--referencias ref1.png ref2.png] 
   editar [frente generado, lado/espalda del original]. Las vistas del original se recortan, se centran y su fondo liso se pasa a blanco.
 - Salidas: `v<n>_{frente,lado,espalda}.png`, `hoja_concepto.jpg` (<= 1000 px, una fila por variante), `concepto.yaml` (modelo, semillas, prompts,
   tiempos, costo) y `seleccion.yaml` (`concepto: <n>`). Tiempos medidos en A40: arranque ~230 s, pesos ~140 s, ~60 s por frente (4 imagenes de entrada), ~30 s por lado/espalda.
+- **Modo refinado** (`--base`): parte de un concepto ya generado en vez del original y solo eleva el realismo.
+  `assetgen remaster concepto --base concepto_r2/ --base-variante 1 --referencias cara.png brazalete.png tela.png --prompt "..." --variantes 4 --salida concepto_r3/`.
+  El frente se edita con [frente base + referencias de MATERIAL]; lado y espalda con [frente refinado + vista base correspondiente]. Las referencias van en
+  ese orden (cara/piel, cuero+metal, tela), se reducen a 512 px y el prompt dice que son solo de material (no copiar diseno, pose ni camara). La hoja
+  lleva una fila inicial "B" con el concepto base. Brazos pedidos a ~45 grados. **Limitacion medida**: con 3 recortes de detalle el frente copio la composicion de
+  las referencias en las 4 variantes (ver reporte de la ronda 3); si pasa, probar 1 sola referencia, o solo texto, o una por pasada.
 - Pruebas sin GPU: `cli/tests/test_concepto.py`.

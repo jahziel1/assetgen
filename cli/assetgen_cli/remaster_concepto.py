@@ -6,7 +6,12 @@ Agnostico: nada de ningun juego va en el codigo; el diseno y el estilo llegan po
 Flujo por variante (misma semilla en sus 3 vistas):
   frente  = editar [vista frente del original, referencias de estilo] -> personaje de pie en pose A, fondo blanco
   lado    = editar [frente generado, vista lado del original]         -> misma persona de perfil
-  espalda = editar [frente generado, vista espalda del original]      -> misma persona de espaldas"""
+  espalda = editar [frente generado, vista espalda del original]      -> misma persona de espaldas
+
+Modo refinado (--base): en vez del original, la entrada es un concepto ya generado (v<n>_frente|lado|espalda.png de una ronda anterior).
+  frente  = editar [frente base, referencias de MATERIAL/realismo]     -> misma persona, mas realista, brazos a ~45 grados
+  lado    = editar [frente refinado, lado base]                        -> misma persona de perfil
+  espalda = editar [frente refinado, espalda base]                     -> misma persona de espaldas"""
 import json, os, shutil, tempfile, time
 
 from . import yamlmini
@@ -18,6 +23,8 @@ RAIZ_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 VISTAS = ("frente", "lado", "espalda")
 EXTS = (".png", ".jpg", ".jpeg", ".webp")
 SEMILLAS = [11, 222, 3333, 44444]
+SEMILLAS_REFINAR = [5, 66, 777, 8888]   # distintas de la ronda base para que el refinado no repita su ruido
+LADO_REF = 512                          # lado mayor de las referencias de material (recortes de detalle): menos tokens de imagen
 ANCHO, ALTO = 768, 1328               # ~1328 px de alto, multiplos de 16
 PASOS = 8
 MODELO = "Qwen/Qwen-Image-Edit-2511"
@@ -39,6 +46,16 @@ POSE_A = ("standing straight in a neutral A-pose: both arms straight and clearly
 FORMATO = ("full body from head to feet fully in frame, orthographic look with no perspective, on a plain pure white (#FFFFFF) "
            "background: replace any gray or black background of the pictures with pure white, no gradient, no floor, "
            "soft even lighting, no cast shadow on the background")
+
+
+REFINAR_POSE = ("standing straight in a neutral A-pose: both arms straight and clearly spread away from the torso at about 45 degrees "
+                "(wider than in Picture 1), with a clear visible gap between each arm and the body, open relaxed hands with separated "
+                "fingers (not fists), legs straight and parallel, shoulder-width apart, feet flat on the ground, neutral expression, "
+                "nothing held in the hands (no props, no weapon)")
+# papel de cada referencia segun su orden (--referencias cara brazalete tela); con otro numero se usa un texto generico
+ROLES_REF = ("photoreal skin, face and beard: realistic pores, subtle skin tone variation, individual beard hairs, natural eyes",
+             "leather and metal: embossed worn leather with stitching, scratched metal and the skin of the arm",
+             "fabric: woven brocade with relief, fold shadows, wear and fine thread detail, for the baggy trousers and the sleeves")
 
 
 def _lista_a_texto(nums):
@@ -76,6 +93,77 @@ def prompt_vista(vista, extra=""):
         s += extra.strip().rstrip(".") + ". "
     s += f"The character is {POSE_A}, same A-pose as Picture 1, standing still (not walking), {FORMATO}."
     return s
+
+
+def _roles_ref(n_refs):
+    if n_refs == len(ROLES_REF):
+        partes = [f"Picture {k + 2} is a material reference for {ROLES_REF[k]}" for k in range(n_refs)]
+        return "; ".join(partes) + ". "
+    if not n_refs:
+        return ""
+    refs = _lista_a_texto(range(2, n_refs + 2))
+    return f"Picture{'s' if n_refs > 1 else ''} {refs} {'are' if n_refs > 1 else 'is a'} material and realism reference{'s' if n_refs > 1 else ''}. "
+
+
+def prompt_refinar_frente(n_refs, extra=""):
+    """Modo refinado. Imagen 1 = frente ya generado (se conserva); imagenes 2.. = referencias SOLO de material y realismo."""
+    s = ("Picture 1 is a character concept. Keep EXACTLY the same person, the same design, the same colors and the same clothes as in "
+         "Picture 1, the same full body framing and proportions, on a plain pure white background. Only raise the realism of the materials. ")
+    if n_refs:
+        s += (_roles_ref(n_refs) + "These pictures are material and realism reference only: do not copy their clothing design, their person, "
+              "their hair, their pose or their camera. The face reference shows a person without a hood and with loose hair: do not copy "
+              "that, keep the hood of Picture 1. ")
+    s += ("Make the skin, face and beard photorealistic, the leather and metal realistic with wear, and the fabric of the baggy trousers "
+          "and the sleeves textured with natural folds, while keeping the blue hood with the gold band exactly as in Picture 1. ")
+    if extra:
+        s += extra.strip().rstrip(".") + ". "
+    s += f"The character is {REFINAR_POSE}, facing the camera, orthographic front view, {FORMATO}."
+    return s
+
+
+def prompt_refinar_vista(vista, extra=""):
+    """Modo refinado. Imagen 1 = frente refinado; imagen 2 = la misma vista (lado/espalda) de la base, solo para la silueta y las piezas."""
+    mirada = "the exact side (profile) view" if vista == "lado" else "the exact back view, seen from behind"
+    desde = "the side" if vista == "lado" else "behind"
+    s = (f"Show the same person and the same outfit as in Picture 1, seen from {mirada}. Same character, same face, same clothes, same colors, "
+         f"same realistic materials (photoreal skin, leather, metal and textured fabric), same proportions and same rendering quality as "
+         f"Picture 1. Picture 2 is an earlier version of the same character seen from {desde}: use it only to see how the outfit pieces and "
+         "silhouette look from this side; do not copy its flatter materials, and do not copy its arms, which are too close to the body. ")
+    if extra:
+        s += extra.strip().rstrip(".") + ". "
+    s += f"The character is {REFINAR_POSE}, same A-pose as Picture 1, standing still (not walking), {FORMATO}."
+    return s
+
+
+def encontrar_base(carpeta, variante=1):
+    """{'frente','lado','espalda'} de un concepto ya generado: v<variante>_<vista>.png o, si no, <vista>.png en esa carpeta."""
+    if not os.path.isdir(carpeta):
+        raise SystemExit(f"--base no es una carpeta: {carpeta}")
+    out = {}
+    for v in VISTAS:
+        for nombre in (f"v{variante}_{v}", v):
+            for ext in EXTS:
+                f = os.path.join(carpeta, nombre + ext)
+                if os.path.isfile(f):
+                    out[v] = f
+                    break
+            if v in out:
+                break
+    faltan = [v for v in VISTAS if v not in out]
+    if faltan:
+        raise SystemExit(f"en {carpeta} faltan las vistas base: {', '.join(faltan)} (espero v{variante}_frente|lado|espalda.png o frente|lado|espalda.png)")
+    return out
+
+
+def preparar_referencia(origen, destino, lado=LADO_REF):
+    """Recorte de material: se conserva tal cual (sin recentrar ni tocar el fondo), solo se reduce a `lado` px como maximo."""
+    from PIL import Image
+    im = Image.open(origen).convert("RGB")
+    k = min(1.0, lado / max(im.size))
+    if k < 1:
+        im = im.resize((max(1, round(im.width * k)), max(1, round(im.height * k))), Image.LANCZOS)
+    im.save(destino)
+    return im.size
 
 
 def encontrar_vistas(carpeta):
@@ -143,21 +231,24 @@ def semillas_para(n, base=None):
     return s[:n]
 
 
-def plan_trabajos(n_variantes, n_refs, extra="", semillas=None):
+def plan_trabajos(n_variantes, n_refs, extra="", semillas=None, refinar=False):
     """Plan sin GPU: lista de trabajos con prompt, semilla e imagenes de entrada.
-    Cada imagen de entrada es {'ref': <archivo en el pod relativo a /root/in>} o {'gen': <id de un trabajo anterior>}."""
+    Cada imagen de entrada es {'ref': <archivo en el pod relativo a /root/in>} o {'gen': <id de un trabajo anterior>}.
+    refinar=True: la entrada es el concepto base (carpeta base/ en el pod) y las referencias son solo de material/realismo."""
     if n_variantes < 1:
         raise SystemExit("--variantes debe ser >= 1")
-    sem = semillas_para(n_variantes, semillas)
+    sem = semillas_para(n_variantes, semillas or (SEMILLAS_REFINAR if refinar else None))
+    carp = "base" if refinar else "vistas"
+    pf = (lambda: prompt_refinar_frente(n_refs, extra)) if refinar else (lambda: prompt_frente(n_refs, extra))
+    pv = prompt_refinar_vista if refinar else prompt_vista
     jobs = []
     for i in range(n_variantes):
         v = i + 1
-        jobs.append({"id": f"v{v}_frente", "variante": v, "vista": "frente", "seed": sem[i],
-                     "prompt": prompt_frente(n_refs, extra),
-                     "imagenes": [{"ref": "vistas/frente.png"}] + [{"ref": f"refs/ref{k + 1}.png"} for k in range(n_refs)]})
+        jobs.append({"id": f"v{v}_frente", "variante": v, "vista": "frente", "seed": sem[i], "prompt": pf(),
+                     "imagenes": [{"ref": f"{carp}/frente.png"}] + [{"ref": f"refs/ref{k + 1}.png"} for k in range(n_refs)]})
         for vista in ("lado", "espalda"):
-            jobs.append({"id": f"v{v}_{vista}", "variante": v, "vista": vista, "seed": sem[i], "prompt": prompt_vista(vista, extra),
-                         "imagenes": [{"gen": f"v{v}_frente"}, {"ref": f"vistas/{vista}.png"}]})
+            jobs.append({"id": f"v{v}_{vista}", "variante": v, "vista": vista, "seed": sem[i], "prompt": pv(vista, extra),
+                         "imagenes": [{"gen": f"v{v}_frente"}, {"ref": f"{carp}/{vista}.png"}]})
     return jobs
 
 
@@ -166,44 +257,57 @@ def segundos_estimados(jobs):
     return (ARRANQUE_S + 30 + RECARGA_S * (rondas - 1) + len(jobs) * SEG_IMG) * MARGEN
 
 
-def hoja_concepto(out, n, destino, ancho=1000):
-    """Una fila por variante con frente | lado | espalda, <= `ancho` px de ancho, con el numero de variante."""
+def hoja_concepto(out, n, destino, ancho=1000, base=None):
+    """Una fila por variante con frente | lado | espalda, <= `ancho` px de ancho, con el numero de variante.
+    base = {'frente','lado','espalda': ruta}: fila inicial de comparacion (etiqueta 'B') con el concepto de partida."""
     from PIL import Image, ImageDraw, ImageFont
     gap = 4
     celda_w = (ancho - gap * 4) // 3
     celda_h = round(celda_w * ALTO / ANCHO)
-    hoja = Image.new("RGB", (gap * 4 + celda_w * 3, gap + n * (celda_h + gap)), (40, 40, 40))
+    filas = ([("B", {v: base[v] for v in VISTAS if v in base})] if base else []) + \
+            [(str(i + 1), {v: os.path.join(out, f"v{i + 1}_{v}.png") for v in VISTAS}) for i in range(n)]
+    hoja = Image.new("RGB", (gap * 4 + celda_w * 3, gap + len(filas) * (celda_h + gap)), (40, 40, 40))
     try:
         fuente = ImageFont.load_default(size=26)
     except TypeError:
         fuente = ImageFont.load_default()
     d = ImageDraw.Draw(hoja)
-    for i in range(n):
+    for i, (etiqueta, rutas) in enumerate(filas):
         y = gap + i * (celda_h + gap)
         for j, vista in enumerate(VISTAS):
-            f = os.path.join(out, f"v{i + 1}_{vista}.png")
-            if not os.path.exists(f):
+            f = rutas.get(vista)
+            if not f or not os.path.exists(f):
                 continue
             im = Image.open(f).convert("RGB")
             im.thumbnail((celda_w, celda_h))
             hoja.paste(im, (gap + j * (celda_w + gap) + (celda_w - im.width) // 2, y))
         d.rectangle([gap, y, gap + 34, y + 34], fill=(0, 0, 0))
-        d.text((gap + 8, y + 2), str(i + 1), fill=(255, 255, 80), font=fuente)
+        d.text((gap + 8, y + 2), etiqueta, fill=(255, 255, 80), font=fuente)
     hoja.save(destino, quality=88)
     return destino
 
 
 def cmd_concepto(args):
     yaml = yamlmini.yaml()
-    vistas = encontrar_vistas(os.path.abspath(os.path.expanduser(args.vistas)))
+    base_dir = getattr(args, "base", None)
+    refinar = bool(base_dir)
+    if refinar:
+        vistas = encontrar_base(os.path.abspath(os.path.expanduser(base_dir)), getattr(args, "base_variante", 1))
+        log("modo refinado (--base): se conserva el concepto base y las referencias solo aportan material/realismo")
+    elif getattr(args, "vistas", None):
+        vistas = encontrar_vistas(os.path.abspath(os.path.expanduser(args.vistas)))
+    else:
+        raise SystemExit("hace falta --vistas (original) o --base (concepto ya generado a refinar)")
     refs = listar_referencias(args.referencias)
-    if not refs:
+    if not refs and not refinar:
         log("sin --referencias: el estilo sale solo del texto del prompt (la vista del original solo da el diseno)")
+    if refinar and not refs:
+        log("AVISO: --base sin --referencias: solo se re-renderiza la base (sin recortes de material el realismo apenas cambia)")
     if len(refs) > 3:
         log(f"AVISO: {len(refs)} referencias; el editor rinde mejor con <= 3 (cada imagen extra alarga la generacion)")
     nvar = args.variantes
     extra = args.prompt or ""
-    jobs = plan_trabajos(nvar, len(refs), extra)
+    jobs = plan_trabajos(nvar, len(refs), extra, refinar=refinar)
     out = os.path.abspath(os.path.expanduser(args.salida))
     os.makedirs(out, exist_ok=True)
     pend = [j for j in jobs if args.forzar or not os.path.exists(os.path.join(out, j["id"] + ".png"))]
@@ -222,11 +326,15 @@ def cmd_concepto(args):
         stage = tempfile.mkdtemp(prefix="assetgen-concepto-")
         bajado = tempfile.mkdtemp(prefix="assetgen-conceptoout-")
         try:
-            os.makedirs(os.path.join(stage, "vistas")); os.makedirs(os.path.join(stage, "refs"))
+            carp = "base" if refinar else "vistas"
+            os.makedirs(os.path.join(stage, carp)); os.makedirs(os.path.join(stage, "refs"))
             for v in VISTAS:
-                preparar_imagen(vistas[v], os.path.join(stage, "vistas", v + ".png"))
+                if refinar:        # el concepto base ya esta encuadrado a la proporcion de salida: se sube tal cual
+                    shutil.copy(vistas[v], os.path.join(stage, carp, v + ".png"))
+                else:
+                    preparar_imagen(vistas[v], os.path.join(stage, carp, v + ".png"))
             for k, r in enumerate(refs):
-                preparar_imagen(r, os.path.join(stage, "refs", f"ref{k + 1}.png"))
+                (preparar_referencia if refinar else preparar_imagen)(r, os.path.join(stage, "refs", f"ref{k + 1}.png"))
             existentes = [j for j in jobs if j not in pend and j["vista"] == "frente"]
             if existentes:        # un frente ya generado sirve de entrada para lado/espalda pendientes
                 os.makedirs(os.path.join(stage, "gen"))
@@ -235,7 +343,7 @@ def cmd_concepto(args):
             plan = {"model": MODELO, "steps": PASOS, "width": ANCHO, "height": ALTO, "jobs": pend}
             with open(os.path.join(stage, "plan.json"), "w") as f:
                 json.dump(plan, f, indent=1, ensure_ascii=False)
-            archivos = ["plan.json", "vistas"] + (["refs"] if refs else []) + (["gen"] if existentes else [])
+            archivos = ["plan.json", carp] + (["refs"] if refs else []) + (["gen"] if existentes else [])
             t = {}
             with Sesion("concepto", IMG_IMAGEN, c, max(args.disco, 100), out, max_min=args.max_min,
                         presupuesto=args.presupuesto, espera_ssh=args.timeout_arranque * 60,
@@ -272,13 +380,14 @@ def cmd_concepto(args):
     if faltan:
         raise SystemExit(f"Faltan imagenes: {', '.join(faltan)}")
     datos = {"modelo": MODELO, "lora": LORA, "licencia": LICENCIA, "pasos": PASOS, "tamano": f"{ANCHO}x{ALTO}",
+             "modo": "refinado" if refinar else "concepto", "base": [os.path.basename(vistas[v]) for v in VISTAS] if refinar else None,
              "referencias": [os.path.basename(r) for r in refs], "prompt_extra": extra, "variantes": nvar,
              "trabajos": [{k: j[k] for k in ("id", "vista", "seed", "prompt")} | {"entradas": [im.get("ref") or "gen:" + im["gen"] for im in j["imagenes"]]} for j in jobs],
              **{k: resultados[k] for k in ("gpu", "precio_h", "tiempos_s", "costo_usd", "imagenes") if k in resultados}}
     with open(os.path.join(out, "concepto.yaml"), "w") as f:
         yaml.safe_dump(datos, f, allow_unicode=True, sort_keys=False)
     try:
-        hoja = hoja_concepto(out, nvar, os.path.join(out, "hoja_concepto.jpg"))
+        hoja = hoja_concepto(out, nvar, os.path.join(out, "hoja_concepto.jpg"), base=vistas if refinar else None)
     except ImportError:
         hoja = "(sin Pillow no hay hoja)"
     sel = os.path.join(out, "seleccion.yaml")

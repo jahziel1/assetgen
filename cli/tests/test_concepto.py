@@ -56,6 +56,71 @@ class Plan(unittest.TestCase):
         self.assertGreater(C.segundos_estimados(jobs), C.segundos_estimados(jobs[:1]))   # 2 rondas cuestan una recarga mas
 
 
+class Refinado(unittest.TestCase):
+    def test_plan_refinar(self):
+        jobs = C.plan_trabajos(4, 3, "young prince", refinar=True)
+        self.assertEqual(len(jobs), 12)
+        self.assertEqual(jobs[0]["imagenes"], [{"ref": "base/frente.png"}, {"ref": "refs/ref1.png"}, {"ref": "refs/ref2.png"}, {"ref": "refs/ref3.png"}])
+        self.assertEqual(jobs[1]["imagenes"], [{"gen": "v1_frente"}, {"ref": "base/lado.png"}])
+        self.assertEqual(jobs[7]["imagenes"], [{"gen": "v3_frente"}, {"ref": "base/lado.png"}])
+        self.assertEqual(len({j["seed"] for j in jobs}), 4)
+        self.assertNotEqual(jobs[0]["seed"], C.plan_trabajos(1, 0)[0]["seed"])      # semillas propias del refinado
+        self.assertFalse(any("vistas/" in im.get("ref", "") for j in jobs for im in j["imagenes"]))
+
+    def test_prompt_refinar(self):
+        p = C.prompt_refinar_frente(3, "young prince")
+        for t in ("EXACTLY the same person", "about 45 degrees", "reference only", "do not copy their clothing design", "Picture 2 is a material reference for photoreal skin",
+                  "Picture 3", "Picture 4", "blue hood with the gold band", "pure white", "not fists", "young prince."):
+            self.assertIn(t, p)
+        self.assertNotIn("40 degrees", p)
+        self.assertNotIn("Picture 2", C.prompt_refinar_frente(0))
+        self.assertIn("Pictures 2 and 3 are material and realism references", C.prompt_refinar_frente(2))
+        for v, t in (("lado", "side (profile)"), ("espalda", "from behind")):
+            q = C.prompt_refinar_vista(v)
+            self.assertIn(t, q); self.assertIn("45 degrees", q); self.assertIn("not walking", q); self.assertIn("earlier version", q)
+
+    def test_base_y_referencia(self):
+        d = tempfile.mkdtemp()
+        for n in C.VISTAS:
+            imagen(os.path.join(d, f"v2_{n}.png"))
+        self.assertEqual(sorted(C.encontrar_base(d, 2)), sorted(C.VISTAS))
+        with self.assertRaises(SystemExit) as e:
+            C.encontrar_base(d, 1)
+        self.assertIn("v1_frente", str(e.exception))
+        imagen(os.path.join(d, "frente.png"))
+        from PIL import Image
+        r = os.path.join(d, "r.png"); Image.new("RGB", (1000, 800), (90, 40, 20)).save(r)
+        o = os.path.join(d, "o.png")
+        self.assertEqual(C.preparar_referencia(r, o), (C.LADO_REF, round(800 * C.LADO_REF / 1000)))   # reduce, conserva proporcion y fondo
+        self.assertEqual(Image.open(o).getpixel((1, 1)), (90, 40, 20))
+
+    def test_hoja_con_base(self):
+        from PIL import Image
+        d = tempfile.mkdtemp()
+        base = {}
+        for v in C.VISTAS:
+            base[v] = os.path.join(d, "b_" + v + ".png"); Image.new("RGB", (C.ANCHO, C.ALTO), (9, 90, 9)).save(base[v])
+            Image.new("RGB", (C.ANCHO, C.ALTO), (90, 9, 9)).save(os.path.join(d, f"v1_{v}.png"))
+        sin = C.hoja_concepto(d, 1, os.path.join(d, "a.jpg")); con = C.hoja_concepto(d, 1, os.path.join(d, "b.jpg"), base=base)
+        self.assertGreater(Image.open(con).height, Image.open(sin).height * 1.8)         # una fila mas
+        self.assertLessEqual(Image.open(con).width, 1000)
+
+    def test_dry_run_refinar(self):
+        from unittest import mock
+        d = tempfile.mkdtemp(); b = os.path.join(d, "b"); os.makedirs(b)
+        for n in C.VISTAS:
+            imagen(os.path.join(b, f"v1_{n}.png"))
+        refs = []
+        for n in ("a", "b", "c"):
+            refs.append(os.path.join(d, n + ".png")); imagen(refs[-1])
+        cand = [("id", "NVIDIA A40", 0.59, 48)]
+        with mock.patch.object(C, "_candidatas", return_value=cand), mock.patch.object(C, "Sesion", side_effect=AssertionError("no debe encender")):
+            rc = M.main(["remaster", "concepto", "--base", b, "--referencias"] + refs + ["--variantes", "4", "--salida", os.path.join(d, "o"), "--dry-run"])
+            self.assertEqual(rc, 0)
+            with self.assertRaises(SystemExit):                      # ni --vistas ni --base
+                M.main(["remaster", "concepto", "--salida", os.path.join(d, "o2"), "--dry-run"])
+
+
 class Archivos(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
