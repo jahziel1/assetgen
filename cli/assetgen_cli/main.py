@@ -54,26 +54,12 @@ def cmd_3d(args):
     stage = tempfile.mkdtemp(prefix="assetgen-in-")
     for n, f in pendientes.items():
         shutil.copy(f, os.path.join(stage, n + os.path.splitext(f)[1].lower()))
-    env = " ".join(f"{k}={v}" for k, v in p["env"].items())
     t = {}
     try:
         with Sesion("3d", IMG_TRELLIS, c, args.disco, out, max_min=args.max_min, presupuesto=args.presupuesto, espera_ssh=args.timeout_arranque * 60,
                     comando=f"3d preset={preset} n={len(pendientes)}") as s:
             t0 = s.t_crear
-            s.subir(stage, sorted(os.listdir(stage)), "/root/in")
-            s.subir_archivo(os.path.join(RAIZ_REPO, "scripts", "run_trellis2.py"), "/root/run_trellis2_local.py")
-            log("descargando pesos (prepare_weights.sh trellis2)")
-            s.ssh("/opt/assetgen/prepare_weights.sh trellis2")
-            t["pesos_listos"] = round(time.time() - t0, 1)
-            log(f"pesos listos a los {t['pesos_listos']} s del pod")
-            tg = time.time()
-            log(f"generando ({preset}: {env})")
-            s.ssh(f"mkdir -p /root/out/trellis2 && cd /root && {env} flock /root/gpu.lock /root/venv-trellis2/bin/python /root/run_trellis2_local.py /root/in /root/out/trellis2")
-            t["generacion"] = round(time.time() - tg, 1)
-            s.bajar("/root/out/trellis2", out)
-            t["total_pod"] = round(time.time() - t0, 1)
-            t["ssh_listo"] = s.hitos.get("ssh_listo")
-            t["arranque"] = t["pesos_listos"]
+            _fase_3d(s, preset, stage, out, t, t0)
             gpu, precio = s.gpu, s.precio_h
     finally:
         shutil.rmtree(stage, ignore_errors=True)
@@ -89,15 +75,35 @@ def cmd_3d(args):
     return 0
 
 
+def _fase_3d(s, preset, stage, out, t, t0):
+    """Dentro de una Sesion: sube las imagenes de `stage`, baja pesos de TRELLIS.2, genera y baja los GLB a `out`."""
+    p = PRESETS_3D[preset]
+    env = " ".join(f"{k}={v}" for k, v in p["env"].items())
+    s.subir(stage, sorted(os.listdir(stage)), "/root/in")
+    s.subir_archivo(os.path.join(RAIZ_REPO, "scripts", "run_trellis2.py"), "/root/run_trellis2_local.py")
+    log("descargando pesos (prepare_weights.sh trellis2)")
+    s.ssh("/opt/assetgen/prepare_weights.sh trellis2")
+    t["pesos_listos"] = round(time.time() - t0, 1)
+    log(f"pesos listos a los {t['pesos_listos']} s del pod")
+    tg = time.time()
+    log(f"generando ({preset}: {env})")
+    s.ssh(f"mkdir -p /root/out/trellis2 && cd /root && {env} flock /root/gpu.lock /root/venv-trellis2/bin/python /root/run_trellis2_local.py /root/in /root/out/trellis2")
+    t["generacion"] = round(time.time() - tg, 1)
+    s.bajar("/root/out/trellis2", out)
+    t["total_pod"] = round(time.time() - t0, 1)
+    t["ssh_listo"] = s.hitos.get("ssh_listo")
+    t["arranque"] = t["pesos_listos"]
+
+
 # ---------------------------------------------------------------- rig
-RIG_RECOGER = r"""mkdir -p /root/out; cp /root/work/*/*_rigged.glb /root/out/ 2>/dev/null; python3 - <<'PY'
+RIG_RECOGER = r"""mkdir -p /root/out_rig; cp /root/work/*/*_rigged.glb /root/out_rig/ 2>/dev/null; python3 - <<'PY'
 import json, glob
 d = {}
 for f in sorted(glob.glob('/root/stats/*.json')):
     j = json.load(open(f)); d[j['stage']] = {k: v for k, v in j.items() if k != 'stage'}
-json.dump(d, open('/root/out/etapas.json', 'w'), indent=1)
+json.dump(d, open('/root/out_rig/etapas.json', 'w'), indent=1)
 PY
-ls /root/out"""
+ls /root/out_rig"""
 
 
 def cmd_rig(args):
@@ -118,25 +124,7 @@ def cmd_rig(args):
                 comando=f"rig n={len(pend)}") as s:
         t0 = s.t_crear
         s.subir(args.input, [os.path.basename(g) for g in pend], "/root/in")
-        log("descargando pesos (prepare_weights.sh puppeteer)")
-        s.ssh("/opt/assetgen/prepare_weights.sh puppeteer")
-        t["pesos_listos"] = round(time.time() - t0, 1)
-        tg = time.time()
-        fallos = []
-        for g in pend:
-            n = os.path.basename(g)[:-4]
-            log(f"rig {n}")
-            rc = s.ssh(f"cd /root && /root/rig.sh {n} /root/in/{n}.glb", check=False)
-            # bpy suele terminar con segfault DESPUES de exportar: manda la existencia del GLB, no el codigo de salida
-            if s.ssh(f"test -s /root/work/{n}/{n}_rigged.glb", check=False) != 0:
-                fallos.append(n)
-            elif rc != 0:
-                log(f"aviso: rig.sh de {n} salio con rc={rc} pero el GLB riggeado existe (segfault de bpy al cerrar)")
-        t["generacion"] = round(time.time() - tg, 1)
-        s.ssh(RIG_RECOGER)
-        s.bajar("/root/out", out)
-        t["total_pod"] = round(time.time() - t0, 1)
-        t["ssh_listo"] = s.hitos.get("ssh_listo"); t["arranque"] = t["pesos_listos"]
+        fallos = _fase_rig(s, [os.path.basename(g)[:-4] for g in pend], "/root/in", out, t, t0)
         gpu, precio = s.gpu, s.precio_h
     etapas = {}
     try:
@@ -146,6 +134,98 @@ def cmd_rig(args):
     _guardar_stats(out, {"gpu": gpu, "precio_h": precio, "tiempos_s": t, "costo_usd": s.costo_total,
                          "fallos": fallos, "etapas": etapas})
     log(f"listo: {len(glob.glob(os.path.join(out, '*_rigged.glb')))} glb riggeados en {out}; tiempos {t}")
+    return 1 if fallos else 0
+
+
+def _fase_rig(s, nombres, remoto_in, out, t, t0):
+    """Dentro de una Sesion: baja pesos de Puppeteer, riggea /root/in/<n>.glb de `remoto_in` y baja los *_rigged.glb a `out`. Devuelve los fallos."""
+    log("descargando pesos (prepare_weights.sh puppeteer)")
+    s.ssh("/opt/assetgen/prepare_weights.sh puppeteer")
+    t["pesos_listos_rig"] = round(time.time() - t0, 1)
+    t.setdefault("pesos_listos", t["pesos_listos_rig"])
+    tg = time.time()
+    fallos = []
+    for n in nombres:
+        log(f"rig {n}")
+        rc = s.ssh(f"cd /root && /root/rig.sh {n} {remoto_in}/{n}.glb", check=False)
+        # bpy suele terminar con segfault DESPUES de exportar: manda la existencia del GLB, no el codigo de salida
+        if s.ssh(f"test -s /root/work/{n}/{n}_rigged.glb", check=False) != 0:
+            fallos.append(n)
+        elif rc != 0:
+            log(f"aviso: rig.sh de {n} salio con rc={rc} pero el GLB riggeado existe (segfault de bpy al cerrar)")
+    t["generacion_rig"] = round(time.time() - tg, 1)
+    t.setdefault("generacion", t["generacion_rig"])
+    s.ssh(RIG_RECOGER)
+    s.bajar("/root/out_rig", out)
+    t["total_pod"] = round(time.time() - t0, 1)
+    t["ssh_listo"] = s.hitos.get("ssh_listo"); t["arranque"] = t["pesos_listos"]
+    return fallos
+
+
+def cmd_3d_rig(args, preset, pend3d, a_rig, d3, drig):
+    """UN pod (imagen assetgen-3d) para 3D + rig: genera los GLB con TRELLIS.2, los riggea ahi mismo con Puppeteer y baja ambos resultados.
+    pend3d: {nombre: png} a generar; a_rig: nombres a riggear (su GLB sale del pod o ya esta en d3). Reanudable: las salidas se bajan por etapa."""
+    os.makedirs(d3, exist_ok=True); os.makedirs(drig, exist_ok=True)
+    p = PRESETS_3D[preset]
+    a_rig = [n for n in a_rig if args.forzar or not os.path.exists(os.path.join(drig, n + "_rigged.glb"))]
+    if not pend3d and not a_rig:
+        log("nada que generar ni riggear"); return 0
+    c = _candidatas(args, min_gb=40 if a_rig else 0)
+    seg = ARRANQUE_EST + 150 + len(pend3d) * p["seg_asset"] + (len(a_rig) * RIG_SEG_ASSET + 120 if a_rig else 0)
+    _revisar_presupuesto(args, c, seg)
+    if args.dry_run:
+        log("dry-run: candidatas " + ", ".join(f"{n} ${pr:.2f}" for _, n, pr, _ in c)); return 0
+    stage = tempfile.mkdtemp(prefix="assetgen-in-")
+    for n, f in pend3d.items():
+        shutil.copy(f, os.path.join(stage, n + os.path.splitext(f)[1].lower()))
+    t3, tr = {}, {}
+    fallos = []
+    try:
+        with Sesion("3d-rig", IMG_TRELLIS, c, max(args.disco, 120), d3, max_min=args.max_min, presupuesto=args.presupuesto,
+                    espera_ssh=args.timeout_arranque * 60, comando=f"3d+rig preset={preset} n3d={len(pend3d)} nrig={len(a_rig)}") as s:
+            t0 = s.t_crear
+            if pend3d:
+                _fase_3d(s, preset, stage, d3, t3, t0)
+            t_fin3d = time.time()
+            if a_rig:
+                # GLB a riggear: los recien generados ya estan en el pod; los que existian de antes se suben
+                s.ssh("mkdir -p /root/rigin")
+                locales = [n + ".glb" for n in a_rig if n not in pend3d and os.path.exists(os.path.join(d3, n + ".glb"))]
+                if locales:
+                    s.subir(d3, locales, "/root/rigin")
+                for n in a_rig:
+                    if n in pend3d:
+                        s.ssh(f"cp /root/out/trellis2/{n}.glb /root/rigin/ 2>/dev/null; true", check=False)
+                faltan = [n for n in a_rig if s.ssh(f"test -s /root/rigin/{n}.glb", check=False) != 0]
+                for n in faltan:
+                    log(f"AVISO: '{n}' no tiene GLB para riggear (TRELLIS.2 fallo); se omite")
+                fallos = _fase_rig(s, [n for n in a_rig if n not in faltan], "/root/rigin", drig, tr, t0)
+                fallos += faltan
+            gpu, precio = s.gpu, s.precio_h
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    # el costo del pod se reparte entre las dos etapas por tiempo (el arranque cuenta a la primera)
+    total = s.costo_total
+    dur3 = max((t_fin3d - t0) if pend3d else 0, 0); durr = (time.time() - t_fin3d) if a_rig else 0
+    f3 = dur3 / (dur3 + durr) if (dur3 + durr) > 0 and pend3d and a_rig else (1.0 if pend3d else 0.0)
+    if pend3d:
+        assets = []
+        try:
+            assets = json.load(open(os.path.join(d3, "stats.json")))
+        except Exception:
+            pass
+        _guardar_stats(d3, {"preset": preset, "parametros": p["env"], "gpu": gpu, "precio_h": precio, "tiempos_s": t3, "pod_compartido": True,
+                            "costo_usd": round(total * f3, 4), "assets": assets})
+    if a_rig:
+        etapas = {}
+        try:
+            etapas = json.load(open(os.path.join(drig, "etapas.json")))
+        except Exception:
+            pass
+        _guardar_stats(drig, {"gpu": gpu, "precio_h": precio, "tiempos_s": tr, "pod_compartido": True, "costo_usd": round(total * (1 - f3), 4),
+                              "fallos": fallos, "etapas": etapas})
+    log(f"listo (pod compartido 3d+rig): {len(glob.glob(os.path.join(d3, '*.glb')))} glb 3D, {len(glob.glob(os.path.join(drig, '*_rigged.glb')))} riggeados; "
+        f"tiempos 3d={t3} rig={tr}")
     return 1 if fallos else 0
 
 
@@ -205,7 +285,7 @@ def main(argv=None):
         p.add_argument("--nube", choices=["secure", "community", "any"], default="secure")
         p.add_argument("--presupuesto", type=float, help="USD: aborta antes de encender si la estimacion lo excede y apaga si se supera")
         p.add_argument("--max-min", type=int, default=60, help="minutos de vida maxima del pod (apagado de seguridad)")
-        p.add_argument("--timeout-arranque", type=int, default=15, help="minutos maximos hasta tener SSH (la imagen pesa ~11 GB); solo se descarta antes si el pod da error")
+        p.add_argument("--timeout-arranque", type=int, default=15, help="minutos maximos hasta tener SSH (la imagen pesa 10-15 GB); solo se descarta antes si el pod da error")
         p.add_argument("--disco", type=int, default=80, help="disco del contenedor en GB")
         p.add_argument("--forzar", action="store_true", help="regenerar aunque ya exista la salida")
         p.add_argument("--dry-run", action="store_true", help="solo muestra GPU candidatas y estimacion")
@@ -221,7 +301,7 @@ def main(argv=None):
     pr.add_argument("--input", required=True, help="carpeta con .glb")
     comunes(pr); pr.set_defaults(fn=cmd_rig)
 
-    pi = sub.add_parser("imagenes", help="prompts del yaml -> N variantes por asset con Qwen-Image (hoja de contacto + seleccion.yaml)")
+    pi = sub.add_parser("imagenes", help="prompts del yaml -> N variantes por asset con Qwen-Image / Z-Image en UN pod (hoja de contacto + seleccion.yaml)")
     pi.add_argument("--config", required=True, help="assetgen.yaml")
     pi.add_argument("--variantes", type=int, help="variantes por asset (def.: 'variantes' del yaml o 4)")
     pi.add_argument("--solo", help="solo estos assets (separados por coma)")

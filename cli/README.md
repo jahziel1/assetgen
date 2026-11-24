@@ -78,10 +78,10 @@ blender -b -P blender/verificar_glb.py -- final/arquero.glb hoja.png [--clip Wal
 ## Uso de los subcomandos sueltos
 
 ```bash
-# Imagenes -> GLB con TRELLIS.2 (imagen ghcr.io/jahziel1/assetgen-trellis2)
+# Imagenes -> GLB con TRELLIS.2 (imagen ghcr.io/jahziel1/assetgen-3d)
 assetgen 3d --input imagenes/ --preset medio --out salida/3d --presupuesto 1.0
 
-# GLB -> GLB riggeado con Puppeteer (imagen ghcr.io/jahziel1/assetgen-puppeteer)
+# GLB -> GLB riggeado con Puppeteer (imagen ghcr.io/jahziel1/assetgen-3d)
 assetgen rig --input salida/3d --out salida/rig
 
 # usando un assetgen.yaml (ver ejemplos/assetgen.yaml)
@@ -119,6 +119,14 @@ Opciones comunes de `3d` y `rig`:
 El preset `alto` en `construir`: TRELLIS.2 genera en calidad (150k caras, textura 4096) y despues se hace en local (Blender, sin GPU) remesh a quads
 (~20k, QuadriFlow) + UV + bake de normal map y ORM a 2048 con la malla de 150k como alta; recien despues se riggea o se aplica la plantilla de animacion.
 `medio` y `boceto` no postprocesan. `assetgen 3d` suelto no postprocesa (solo `construir`).
+## Imagenes y pods (unificadas)
+
+`imagenes` usa `ghcr.io/jahziel1/assetgen-imagen` (Qwen-Image + Z-Image en un solo venv): **un solo pod** aunque haya assets de qwen y de zimage
+(baja los pesos de cada modelo y corre sus scripts uno tras otro; disco 180 GB si son los dos). `construir` usa `ghcr.io/jahziel1/assetgen-3d`
+(TRELLIS.2 + Puppeteer): **3D y rig en el mismo pod** (el 3D se baja al terminar y despues se riggea ahi mismo; reanudable: lo que ya existe en `3d/` o `rig/` no se rehace).
+Con el preset `alto` (postproceso local en Blender entre el 3D y el rig) siguen siendo dos pods, ambos con la imagen `assetgen-3d`.
+Para volver a las 4 imagenes viejas (un pod por etapa): `ASSETGEN_IMAGENES=viejas assetgen ...` (o `IMAGENES_VIEJAS = True` en `assetgen_cli/presets.py`).
+
 ## Que hace por dentro
 
 1. Elige GPU de la lista con precio <= tope (consulta `runpodctl gpu list`). Si un pod no obtiene SSH en 15 minutos (o entra en error), lo borra

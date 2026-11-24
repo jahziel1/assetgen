@@ -1,7 +1,20 @@
 """Presets de calidad, listas de GPU y constantes de imagen."""
 
-IMG_TRELLIS = "ghcr.io/jahziel1/assetgen-trellis2:latest"
-IMG_PUPPETEER = "ghcr.io/jahziel1/assetgen-puppeteer:latest"
+import os
+
+# Imagenes Docker. Por defecto las UNIFICADAS (2 imagenes: imagen = Qwen+Z-Image, 3d = TRELLIS.2+Puppeteer).
+# Para volver a las viejas (4 imagenes, un pod por etapa): ASSETGEN_IMAGENES=viejas en el entorno, o IMAGENES_VIEJAS = True aqui.
+IMAGENES_VIEJAS = os.environ.get("ASSETGEN_IMAGENES", "").strip().lower() in ("viejas", "viejo", "old", "legacy")
+UNIFICADAS = not IMAGENES_VIEJAS
+
+IMG_IMAGEN = "ghcr.io/jahziel1/assetgen-imagen:latest"
+IMG_3D = "ghcr.io/jahziel1/assetgen-3d:latest"
+IMG_QWEN = "ghcr.io/jahziel1/assetgen-qwen:latest"          # viejas
+IMG_ZIMAGE = "ghcr.io/jahziel1/assetgen-zimage:latest"
+IMG_TRELLIS_VIEJA = "ghcr.io/jahziel1/assetgen-trellis2:latest"
+IMG_PUPPETEER_VIEJA = "ghcr.io/jahziel1/assetgen-puppeteer:latest"
+IMG_TRELLIS = IMG_3D if UNIFICADAS else IMG_TRELLIS_VIEJA
+IMG_PUPPETEER = IMG_3D if UNIFICADAS else IMG_PUPPETEER_VIEJA
 
 # Parametros de run_trellis2.py por preset (variables de entorno) y estimacion de segundos por asset.
 PRESETS_3D = {

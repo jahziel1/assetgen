@@ -1,4 +1,4 @@
-"""Subcomandos encadenados: `imagenes` (Qwen en pod) y `construir` (3D -> rig -> Blender local -> final/)."""
+"""Subcomandos encadenados: `imagenes` (Qwen/Z-Image en un pod) y `construir` (3D -> rig -> Blender local -> final/)."""
 import argparse, glob, json, os, shutil, subprocess, tempfile, time
 
 from . import globalcfg, runpod as rp, yamlmini
@@ -10,18 +10,42 @@ from .sesion import Sesion, log
 
 RAIZ_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BLENDER_DIR = os.path.join(RAIZ_REPO, "blender")
-IMG_QWEN = "ghcr.io/jahziel1/assetgen-qwen:latest"
-IMG_ZIMAGE = "ghcr.io/jahziel1/assetgen-zimage:latest"
-# por modelo de imagen: imagen Docker, venv y script del pod, segundos por imagen (A40/A6000 a la resolucion por defecto) y arranque estimado
+# por modelo de imagen: imagen vieja (una por modelo), venv viejo, script del pod, segundos por imagen (A40/A6000 a la resolucion por defecto),
+# arranque estimado hasta pesos listos (imagen + SSH + pesos) y segundos extra de pesos cuando se suma a otro modelo en el mismo pod
 MODELOS_IMG = {
-    "qwen": dict(imagen=IMG_QWEN, venv="/root/venv-qwen", script="gen_images.py", seg_img=16, arranque=12 * 60 + 420,
+    "qwen": dict(imagen_vieja=IMG_QWEN, venv_viejo="/root/venv-qwen", script="gen_images.py", seg_img=16, arranque=12 * 60 + 420, pesos_s=420,
                  nombre="Qwen-Image Lightning 8 pasos"),
-    "zimage": dict(imagen=IMG_ZIMAGE, venv="/root/venv-zimage", script="gen_images_zimage.py", seg_img=30, arranque=12 * 60 + 240,
+    "zimage": dict(imagen_vieja=IMG_ZIMAGE, venv_viejo="/root/venv-zimage", script="gen_images_zimage.py", seg_img=30, arranque=12 * 60 + 240, pesos_s=240,
                    nombre="Z-Image Turbo 9 pasos + ControlNet de pose"),
 }
+VENV_IMAGEN = "/root/venv-imagen"
+
+
+def venv_imagen(modelo, unificadas=None):
+    return VENV_IMAGEN if (UNIFICADAS if unificadas is None else unificadas) else MODELOS_IMG[modelo]["venv_viejo"]
+
+
+def agrupar_imagenes(por_modelo, unificadas=None):
+    """{modelo: [assets]} -> lista de pods [{'imagen': ..., 'modelos': {modelo: [assets]}}].
+    Imagen unificada: UN pod con todos los modelos. Imagenes viejas: un pod por modelo (como antes)."""
+    unificadas = UNIFICADAS if unificadas is None else unificadas
+    por_modelo = {m: l for m, l in por_modelo.items() if l}
+    if not por_modelo:
+        return []
+    if unificadas:
+        return [{"imagen": IMG_IMAGEN, "modelos": por_modelo}]
+    return [{"imagen": MODELOS_IMG[m]["imagen_vieja"], "modelos": {m: l}} for m, l in por_modelo.items()]
+
+
+def segundos_imagenes(grupo, nvar):
+    """Estimacion de segundos de un pod de imagenes: arranque (+ pesos de cada modelo extra) + 120 + generacion."""
+    ms = list(grupo["modelos"])
+    seg = max(MODELOS_IMG[m]["arranque"] for m in ms) + sum(MODELOS_IMG[m]["pesos_s"] for m in ms) - max(MODELOS_IMG[m]["pesos_s"] for m in ms)
+    seg += 120 + sum(len(grupo["modelos"][m]) * nvar * MODELOS_IMG[m]["seg_img"] for m in ms)
+    return seg
+
+
 TIPOS_RIG = ("humanoide", "criatura")
-QWEN_SEG_IMG = 12          # estimacion por imagen en una 48 GB lenta (A6000/A40); L40S ~4 s
-QWEN_ARRANQUE = 12 * 60 + 420   # imagen + SSH + descarga de pesos (~58 GB) + carga
 
 
 def _yaml():
@@ -104,56 +128,68 @@ def cmd_imagenes(args):
     for n, p in prompts.items():
         log(f"prompt {n} [{p['modelo']} {p['size']} pose={p['pose']}]: {p['prompt']}")
     if pend:
-        # un pod por modelo de imagen
-        grupos = {}
+        # imagen unificada: UN pod con todos los modelos (viejas: un pod por modelo)
+        por_modelo = {}
         for a in pend:
-            grupos.setdefault(prompts[a["nombre"]]["modelo"], []).append(a)
+            por_modelo.setdefault(prompts[a["nombre"]]["modelo"], []).append(a)
+        grupos = agrupar_imagenes(por_modelo)
         if not args.dry_run:
             with open(os.path.join(out, "prompts.yaml"), "w") as f:
                 yaml.safe_dump({"seeds": cfg.get("seeds", [11, 222, 3333, 44444]), "variants": nvar, "prompts": prompts}, f,
                                allow_unicode=True, sort_keys=False)
         resultados = []
-        for modelo, lista in grupos.items():
-            M = MODELOS_IMG[modelo]
+        for G in grupos:
+            modelos = G["modelos"]
+            etiqueta = "+".join(modelos)
             c = _candidatas(args, min_gb=40, solo48=True)
-            seg = M["arranque"] + 120 + len(lista) * nvar * M["seg_img"]
-            log(f"modelo {modelo}: {len(lista)} asset(s) ({', '.join(a['nombre'] for a in lista)}) en un pod")
+            seg = segundos_imagenes(G, nvar)
+            n_tot = sum(len(l) for l in modelos.values())
+            for m, lista in modelos.items():
+                log(f"modelo {m}: {len(lista)} asset(s) ({', '.join(a['nombre'] for a in lista)}) en el pod {etiqueta} [{G['imagen']}]")
             _revisar_presupuesto(args, c, seg)
             if args.dry_run:
                 log("dry-run: candidatas " + ", ".join(f"{n} ${pr:.2f}" for _, n, pr, _ in c)); continue
             stage = tempfile.mkdtemp(prefix="assetgen-img-"); bajado = tempfile.mkdtemp(prefix="assetgen-imgout-")
             try:
-                cfg_gen = {"seeds": cfg.get("seeds", [11, 222, 3333, 44444]), "variants": nvar,
-                           "prompts": {a["nombre"]: {k: v for k, v in prompts[a["nombre"]].items() if k != "modelo"} for a in lista}}
-                with open(os.path.join(stage, "prompts.yaml"), "w") as f:
-                    yaml.safe_dump(cfg_gen, f, allow_unicode=True, sort_keys=False)
+                for m, lista in modelos.items():
+                    cfg_gen = {"seeds": cfg.get("seeds", [11, 222, 3333, 44444]), "variants": nvar,
+                               "prompts": {a["nombre"]: {k: v for k, v in prompts[a["nombre"]].items() if k != "modelo"} for a in lista}}
+                    with open(os.path.join(stage, f"prompts_{m}.yaml"), "w") as f:
+                        yaml.safe_dump(cfg_gen, f, allow_unicode=True, sort_keys=False)
                 t = {}
-                with Sesion("imagenes-" + modelo, M["imagen"], c, max(args.disco, 100), out, max_min=args.max_min, presupuesto=args.presupuesto,
-                            espera_ssh=args.timeout_arranque * 60, comando=f"imagenes {modelo} n={len(lista)}x{nvar}") as s:
+                disco = max(args.disco, 100 if len(modelos) == 1 else 180)    # pesos de Qwen (~57 GB) + Z-Image (~35 GB) + imagen
+                with Sesion("imagenes-" + etiqueta, G["imagen"], c, disco, out, max_min=args.max_min, presupuesto=args.presupuesto,
+                            espera_ssh=args.timeout_arranque * 60, comando=f"imagenes {etiqueta} n={n_tot}x{nvar}") as s:
                     t0 = s.t_crear
-                    s.subir(stage, ["prompts.yaml"], "/root/in")
-                    s.subir_archivo(os.path.join(RAIZ_REPO, "scripts", M["script"]), "/root/gen_images_local.py")
-                    log(f"descargando pesos (prepare_weights.sh {modelo})")
-                    s.ssh(f"/opt/assetgen/prepare_weights.sh {modelo}")
-                    t["pesos_listos"] = round(time.time() - t0, 1)
-                    log(f"pesos listos a los {t['pesos_listos']} s del pod")
-                    tg = time.time()
-                    s.ssh(f"mkdir -p /root/out/img && cd /root && flock /root/gpu.lock {M['venv']}/bin/python /root/gen_images_local.py "
-                          "/root/in/prompts.yaml --out /root/out/img" + (" --force" if args.forzar else ""))
-                    t["generacion"] = round(time.time() - tg, 1)
-                    s.bajar("/root/out/img", bajado)
-                    t["total_pod"] = round(time.time() - t0, 1)
+                    s.subir(stage, [f"prompts_{m}.yaml" for m in modelos], "/root/in")
+                    for m in modelos:
+                        s.subir_archivo(os.path.join(RAIZ_REPO, "scripts", MODELOS_IMG[m]["script"]), f"/root/gen_images_{m}.py")
                     t["ssh_listo"] = s.hitos.get("ssh_listo")
                     t["fuente_listo"] = s.hitos.get("fuente_listo")
+                    gen = []
+                    for m, lista in modelos.items():
+                        log(f"descargando pesos (prepare_weights.sh {m})")
+                        s.ssh(f"/opt/assetgen/prepare_weights.sh {m}")
+                        t[f"pesos_listos_{m}"] = round(time.time() - t0, 1)
+                        log(f"pesos de {m} listos a los {t[f'pesos_listos_{m}']} s del pod")
+                        tg = time.time()
+                        s.ssh(f"mkdir -p /root/out/img_{m} && cd /root && flock /root/gpu.lock {venv_imagen(m)}/bin/python /root/gen_images_{m}.py "
+                              f"/root/in/prompts_{m}.yaml --out /root/out/img_{m}" + (" --force" if args.forzar else ""))
+                        t[f"generacion_{m}"] = round(time.time() - tg, 1)
+                        s.bajar(f"/root/out/img_{m}", os.path.join(bajado, m))
+                    t["pesos_listos"] = max(v for k, v in t.items() if k.startswith("pesos_listos_"))
+                    t["generacion"] = round(sum(v for k, v in t.items() if k.startswith("generacion_")), 1)
+                    t["total_pod"] = round(time.time() - t0, 1)
                     gpu, precio = s.gpu, s.precio_h
-                for f in glob.glob(os.path.join(bajado, "*.png")):
-                    shutil.move(f, os.path.join(out, os.path.basename(f)))
-                gen = []
-                try:
-                    gen = json.load(open(os.path.join(bajado, "stats.json"))).get("images", [])
-                except Exception:
-                    pass
-                resultados.append({"modelo": M["nombre"], "gpu": gpu, "precio_h": precio, "tiempos_s": t, "costo_usd": s.costo_total, "imagenes": gen})
+                for m in modelos:
+                    for f in glob.glob(os.path.join(bajado, m, "*.png")):
+                        shutil.move(f, os.path.join(out, os.path.basename(f)))
+                    try:
+                        gen += json.load(open(os.path.join(bajado, m, "stats.json"))).get("images", [])
+                    except Exception:
+                        pass
+                resultados.append({"modelo": " + ".join(MODELOS_IMG[m]["nombre"] for m in modelos), "imagen": G["imagen"], "gpu": gpu, "precio_h": precio,
+                                   "tiempos_s": t, "costo_usd": s.costo_total, "imagenes": gen})
             finally:
                 shutil.rmtree(stage, ignore_errors=True); shutil.rmtree(bajado, ignore_errors=True)
         if args.dry_run:
@@ -195,6 +231,11 @@ def _costo_etapa(carpeta, desde):
     return 0.0
 
 
+def modo_pod_compartido(unificadas, post, hay_rig):
+    """True si 3D y rig pueden ir en un solo pod: imagenes unificadas, hay algo que riggear y no hay postproceso local entre las etapas."""
+    return bool(unificadas and hay_rig and not post)
+
+
 def _args_etapa(args, **kw):
     d = dict(vars(args)); d.update(kw)
     return argparse.Namespace(**d)
@@ -205,10 +246,12 @@ def _seco(args, cfg, preset, assets, pendientes, entradas):
     p = PRESETS_3D[preset]
     n_rig = sum(1 for a in pendientes if a.get("tipo") in TIPOS_RIG)
     seg = 0
+    compartido = modo_pod_compartido(UNIFICADAS, p.get("post"), n_rig > 0)
     if pendientes:
         seg += ARRANQUE_EST + 90 + len(pendientes) * p["seg_asset"]
     if n_rig:
-        seg += ARRANQUE_EST + 120 + n_rig * RIG_SEG_ASSET
+        seg += (0 if compartido else ARRANQUE_EST) + 120 + n_rig * RIG_SEG_ASSET
+    log(f"pods: {'1 (3D + rig en el mismo pod)' if compartido else ('2 (3D y rig por separado)' if n_rig else '1 (solo 3D)')}; imagenes {'unificadas' if UNIFICADAS else 'viejas'}")
     est = args.tope * seg / 3600     # cota superior: precio maximo permitido por hora (no consulta RunPod)
     log(f"SECO (no se enciende nada). proyecto={cfg.get('proyecto')} preset={preset}"
         + (f" (postproceso local: quads ~{p['post']['caras']} + bake {p['post']['tex']}, antes del rig/plantilla)" if p.get("post") else ""))
@@ -226,7 +269,7 @@ def _seco(args, cfg, preset, assets, pendientes, entradas):
 
 
 def cmd_construir(args):
-    from .main import cmd_3d, cmd_rig
+    from .main import cmd_3d, cmd_rig, cmd_3d_rig
     t_ini = time.time()
     yaml = _yaml()
     cfg = cargar(args.config)
@@ -278,9 +321,22 @@ def cmd_construir(args):
     for a in pendientes:
         shutil.copy(entradas[a["nombre"]], os.path.join(stage, a["nombre"] + ".png"))   # el .glb se llamara como el asset
     d3 = os.path.join(out, "3d")
+    drig = os.path.join(out, "rig")
+    # 3D + rig en UN pod (imagen assetgen-3d) cuando hay assets que riggear y no hay postproceso local entre ambas etapas
+    # (el preset alto postprocesa la malla en Blender local ANTES del rig: ahi se usan dos pods, ambos con la misma imagen)
+    rig_hecho = False
     if pendientes:
-        rc = cmd_3d(_args_etapa(args, input=stage, config=None, preset=preset, out=d3))
-        if rc:
+        a_rig_pre = [a["nombre"] for a in pendientes if a.get("tipo") in TIPOS_RIG]
+        if modo_pod_compartido(UNIFICADAS, post, bool(a_rig_pre)):
+            pend3d = {a["nombre"]: os.path.join(stage, a["nombre"] + ".png") for a in pendientes
+                      if args.forzar or not os.path.exists(os.path.join(d3, a["nombre"] + ".glb"))}
+            rc = cmd_3d_rig(_args_etapa(args, config=None, preset=preset, out=d3), preset, pend3d, a_rig_pre, d3, drig)
+            rig_hecho = True
+        else:
+            if post and a_rig_pre:
+                log("preset con postproceso local antes del rig: 3D y rig van en pods separados")
+            rc = cmd_3d(_args_etapa(args, input=stage, config=None, preset=preset, out=d3))
+        if rc and not rig_hecho:
             return rc
     c3 = _costo_etapa(d3, t_ini)
     # ---- 1b) postproceso local (preset alto): quads + normal map ANTES del rig y de las plantillas, para que las
@@ -311,8 +367,7 @@ def cmd_construir(args):
             shutil.copy(g, rig_in)
         else:
             fallos[a["nombre"]] = "TRELLIS.2 no produjo el .glb"
-    drig = os.path.join(out, "rig")
-    if os.listdir(rig_in):
+    if os.listdir(rig_in) and not rig_hecho:
         pres = None if args.presupuesto is None else max(args.presupuesto - c3, 0.05)
         rc = cmd_rig(_args_etapa(args, input=rig_in, out=drig, presupuesto=pres))
     crig = _costo_etapa(drig, t_ini) if os.path.isdir(drig) else 0.0
