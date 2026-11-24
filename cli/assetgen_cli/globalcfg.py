@@ -5,6 +5,7 @@ config.yaml (ver ejemplos/config_global.yaml):
     blender: /Applications/Blender 5.3.app/Contents/MacOS/Blender      # opcional (tambien variable BLENDER o 'blender' en el PATH)
     quaternius:
       ual1: /ruta/a/UAL1_Standard.glb      # pack Universal Animation Library (CC0, no se redistribuye)
+      animales: /ruta/a/Ultimate Animated Animals   # carpeta del pack (con glTF/Wolf.gltf ...), o un mapa nombre: ruta
 
 La variable ASSETGEN_CONFIG cambia la ruta del archivo; el registro global vive junto a el (costos_global.jsonl).
 """
@@ -57,6 +58,35 @@ def ual1():
     if not os.path.exists(p):
         raise SystemExit(f"No existe el archivo de Quaternius UAL1: {p}")
     return p
+
+
+def fuente_animal(animales, fuente):
+    """Ruta al .gltf/.glb de Quaternius `fuente` (p.ej. 'Wolf') del pack `animales`.
+    `animales` = ruta a la carpeta del pack, o un nombre que se busca en quaternius.animales del config global (ruta, o mapa nombre: ruta);
+    si `animales` es true/vacio se usa quaternius.animales (variable ASSETGEN_ANIMALES). Falla en voz alta si no existe."""
+    q = (cargar().get("quaternius") or {}).get("animales")
+    cand = []
+    if isinstance(animales, str) and animales.strip():
+        cand.append(animales)
+        if isinstance(q, dict) and animales in q:
+            cand.append(q[animales])
+        elif isinstance(q, str) and q:
+            cand.append(q)
+    else:
+        cand.append(os.environ.get("ASSETGEN_ANIMALES") or (q if isinstance(q, str) else None) or (next(iter(q.values()), None) if isinstance(q, dict) else None))
+    for c in cand:
+        if not c:
+            continue
+        base = os.path.expanduser(str(c))
+        if os.path.isfile(base):
+            return base
+        for sub in ("glTF", "", "GLB", "glb"):
+            for ext in (".gltf", ".glb"):
+                f = os.path.join(base, sub, f"{fuente}{ext}")
+                if os.path.isfile(f):
+                    return f
+    raise SystemExit(f"No encuentro la fuente '{fuente}' del pack de animales Quaternius ({animales!r}): agrega\n  quaternius:\n    animales: /ruta/al/pack\n"
+                     f"a {ruta_global()} (o variable ASSETGEN_ANIMALES), o pon una ruta en 'animales:' del asset")
 
 
 def registrar(reg):

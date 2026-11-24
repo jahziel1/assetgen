@@ -259,7 +259,10 @@ def cmd_construir(args):
         entradas[n] = f
     if any(a.get("tipo") == "humanoide" for a in assets):
         globalcfg.ual1()
-    if post or any(a.get("tipo") in ("humanoide", "mecanico") for a in assets):
+    for a in assets:
+        if a.get("tipo") == "criatura" and a.get("animales"):
+            globalcfg.fuente_animal(a["animales"], a["fuente"])   # falla pronto si falta el pack
+    if post or any(a.get("tipo") in ("humanoide", "mecanico") or (a.get("tipo") == "criatura" and a.get("animales")) for a in assets):
         globalcfg.blender_exe()
 
     final = os.path.join(out, "final")
@@ -315,7 +318,7 @@ def cmd_construir(args):
     crig = _costo_etapa(drig, t_ini) if os.path.isdir(drig) else 0.0
     # ---- 3) Blender local
     logs = os.path.join(out, "logs")
-    tmp_h, tmp_m = os.path.join(out, "retarget"), os.path.join(out, "mecanica")
+    tmp_h, tmp_m, tmp_a = os.path.join(out, "retarget"), os.path.join(out, "mecanica"), os.path.join(out, "animales")
     for a in pendientes:
         n, tipo = a["nombre"], a.get("tipo")
         dst = os.path.join(final, n + ".glb")
@@ -336,9 +339,18 @@ def cmd_construir(args):
             ok, rc = _blender("mecanica/animar_mecanico.py", [os.path.join(d3, n + ".glb"), a["plantilla"], salida],
                               os.path.join(logs, n + f"_{a['plantilla']}.log"), salida)
         elif tipo == "criatura":
-            salida = os.path.join(drig, n + "_rigged.glb")   # sin pack de animacion para criaturas todavia
-            ok, rc = os.path.exists(salida), 0
-            log(f"AVISO: '{n}' (criatura) queda riggeada sin clips (la animacion de criaturas no esta automatizada)")
+            rg = os.path.join(drig, n + "_rigged.glb")
+            if a.get("animales"):   # clips de Quaternius Ultimate Animated Animals sobre la malla (metodo b: reemplazo de esqueleto)
+                if not os.path.exists(rg):
+                    fallos[n] = "Puppeteer no produjo el GLB riggeado"; continue
+                os.makedirs(tmp_a, exist_ok=True)
+                salida = os.path.join(tmp_a, n + ".glb")
+                ok, rc = _blender("animales/retarget_animal.py", [rg, globalcfg.fuente_animal(a["animales"], a["fuente"]), salida],
+                                  os.path.join(logs, n + "_animales.log"), salida)
+            else:
+                salida = rg   # sin pack de animacion: queda riggeada sin clips
+                ok, rc = os.path.exists(salida), 0
+                log(f"AVISO: '{n}' (criatura) queda riggeada sin clips (agrega 'animales:' + 'fuente:' al asset para animarla con Quaternius)")
         else:
             salida = os.path.join(d3, n + ".glb"); ok, rc = os.path.exists(salida), 0
         if ok:

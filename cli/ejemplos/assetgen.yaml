@@ -10,7 +10,7 @@ modelo_imagen: qwen    # qwen (1328 px) | zimage (1536 px, admite pose); tambien
 
 # tipo: humanoide  -> imagen en A-pose, rig (Puppeteer) y retarget de clips Quaternius UAL1 (Idle/Walk/Run/Sword_Attack/Death)
 #       mecanico   -> sin rig; animar_mecanico.py con 'plantilla': vehiculo | catapulta | rotor
-#       criatura   -> rig (Puppeteer), sin clips automaticos todavia
+#       criatura   -> rig (Puppeteer); con `animales:` + `fuente:` (p.ej. Wolf, Horse) recibe los clips de Quaternius Ultimate Animated Animals
 #       otro       -> solo imagen + 3D
 assets:
   - nombre: soldado
@@ -28,3 +28,9 @@ assets:
   - nombre: escorpion
     tipo: criatura
     imagen: imagenes/escorpion.png     # ya tengo la imagen: se salta `assetgen imagenes`
+  # criatura cuadrupeda con clips de Quaternius (Ultimate Animated Animals, CC0; ruta del pack en ~/.config/assetgen/config.yaml -> quaternius.animales):
+  # - nombre: lobo
+  #   tipo: criatura
+  #   animales: true          # o una ruta/nombre de pack
+  #   fuente: Wolf            # Wolf, Horse, Fox, Deer, Stag, Cow, Bull, Donkey, Husky, ShibaInu, Alpaca...
+  #   prompt: "grey wolf standing, side view"

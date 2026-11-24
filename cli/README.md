@@ -52,8 +52,11 @@ Modelo de imagen (`modelo_imagen: qwen|zimage`, a nivel proyecto y por asset; po
 2. `rig` (Puppeteer) **solo** para `humanoide` y `criatura`. El exito se decide por la existencia del GLB riggeado (bpy da segfault al cerrar).
 3. En local con Blender (`blender/`): `humanoide` -> `blender/retarget/retarget_ual.py` (clips Idle_Loop, Walk_Loop, Run_Loop, Sword_Attack, Death de
    Quaternius UAL1); `mecanico` -> `blender/mecanica/animar_mecanico.py` con su `plantilla` (`vehiculo|catapulta|rotor`); `criatura` queda riggeada sin
-   clips; otros tipos quedan como el GLB de 3D.
-Es reanudable: no repite lo que ya existe (`--forzar` para rehacer). Intermedios en `<out>/3d`, `post` (solo `alto`), `rig`, `retarget`, `mecanica`, `logs`.
+   clips, salvo que el asset traiga `animales:` (ruta del pack Quaternius Ultimate Animated Animals o un nombre de `quaternius.animales` en la config
+   global) y `fuente:` (`Wolf`, `Horse`, `Fox`...): entonces `blender/animales/retarget_animal.py` reemplaza el esqueleto de Puppeteer por el de Quaternius
+   (pesos transferidos a nuestra malla, ver `blender/animales/`) y conserva todos sus clips (`Walk_Loop`, `Gallop_Loop`, `Idle_Loop`, `Attack`, `Death`...);
+   otros tipos quedan como el GLB de 3D.
+Es reanudable: no repite lo que ya existe (`--forzar` para rehacer). Intermedios en `<out>/3d`, `post` (solo `alto`), `rig`, `retarget`, `mecanica`, `animales`, `logs`.
 
 `assetgen construir ... --seco` solo valida (yaml, imagenes, config global, tope mensual, plantillas) y muestra el plan y la estimacion maxima; no enciende
 nada ni escribe salida.

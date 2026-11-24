@@ -53,6 +53,10 @@ def cargar(ruta):
             raise SystemExit(f"assetgen.yaml: '{a['nombre']}': pose desconocida '{a['pose']}' ({'|'.join(POSES)})")
         if a.get("tipo") == "mecanico" and a.get("plantilla") not in PLANTILLAS:
             raise SystemExit(f"assetgen.yaml: '{a['nombre']}' es mecanico y necesita 'plantilla' ({'|'.join(PLANTILLAS)})")
+        if a.get("animales") and a.get("tipo") != "criatura":
+            raise SystemExit(f"assetgen.yaml: '{a['nombre']}': 'animales' solo aplica a tipo criatura")
+        if a.get("animales") and not a.get("fuente"):
+            raise SystemExit(f"assetgen.yaml: '{a['nombre']}': 'animales' necesita 'fuente' (nombre del animal del pack, p.ej. Wolf)")
     return cfg
 
 
