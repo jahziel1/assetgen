@@ -1,0 +1,7 @@
+*.glb
+*.png
+*.mp4
+*.blend
+.env
+*.token
+__pycache__/
