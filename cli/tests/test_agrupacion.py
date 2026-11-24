@@ -86,6 +86,12 @@ class Agrupacion(unittest.TestCase):
         dos = sum(P.segundos_imagenes(x, 4) for x in P.agrupar_imagenes({"qwen": ["a"], "zimage": ["b"]}, False))
         self.assertLess(uno, dos)
 
+    def test_estimacion_cercana_a_lo_medido(self):
+        """e2e4: 2 variantes, barril (qwen) + velador (zimage) en un pod = 504 s reales; la estimacion queda entre 1x y 2x (antes ~27 min)."""
+        est = P.segundos_imagenes(P.agrupar_imagenes({"qwen": ["barril"], "zimage": ["velador"]}, True)[0], 2)
+        self.assertGreater(est, 504)
+        self.assertLess(est, 2 * 504 + 60)
+
     def test_pod_compartido_3d_rig(self):
         self.assertTrue(P.modo_pod_compartido(True, None, True))
         self.assertFalse(P.modo_pod_compartido(True, {"caras": 1}, True))   # postproceso local entre etapas: 2 pods

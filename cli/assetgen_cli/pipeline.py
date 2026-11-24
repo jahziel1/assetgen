@@ -10,12 +10,17 @@ from .sesion import Sesion, log
 
 RAIZ_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 BLENDER_DIR = os.path.join(RAIZ_REPO, "blender")
+# Tiempos medidos (e2e3/e2e4): SSH listo 150-270 s, pesos ~150 s por modelo, 15-20 s por imagen. Se toma ~210 s de arranque y la
+# estimacion final se multiplica por MARGEN_IMG (1.5) para no obligar a subir --presupuesto sin necesidad.
+ARRANQUE_IMG_S = 210
+PESOS_IMG_S = 150
+MARGEN_IMG = 1.5
 # por modelo de imagen: imagen vieja (una por modelo), venv viejo, script del pod, segundos por imagen (A40/A6000 a la resolucion por defecto),
 # arranque estimado hasta pesos listos (imagen + SSH + pesos) y segundos extra de pesos cuando se suma a otro modelo en el mismo pod
 MODELOS_IMG = {
-    "qwen": dict(imagen_vieja=IMG_QWEN, venv_viejo="/root/venv-qwen", script="gen_images.py", seg_img=16, arranque=12 * 60 + 420, pesos_s=420,
+    "qwen": dict(imagen_vieja=IMG_QWEN, venv_viejo="/root/venv-qwen", script="gen_images.py", seg_img=18, arranque=ARRANQUE_IMG_S + PESOS_IMG_S, pesos_s=PESOS_IMG_S,
                  nombre="Qwen-Image Lightning 8 pasos"),
-    "zimage": dict(imagen_vieja=IMG_ZIMAGE, venv_viejo="/root/venv-zimage", script="gen_images_zimage.py", seg_img=30, arranque=12 * 60 + 240, pesos_s=240,
+    "zimage": dict(imagen_vieja=IMG_ZIMAGE, venv_viejo="/root/venv-zimage", script="gen_images_zimage.py", seg_img=20, arranque=ARRANQUE_IMG_S + PESOS_IMG_S, pesos_s=PESOS_IMG_S,
                    nombre="Z-Image Turbo 9 pasos + ControlNet de pose"),
 }
 VENV_IMAGEN = "/root/venv-imagen"
@@ -38,11 +43,11 @@ def agrupar_imagenes(por_modelo, unificadas=None):
 
 
 def segundos_imagenes(grupo, nvar):
-    """Estimacion de segundos de un pod de imagenes: arranque (+ pesos de cada modelo extra) + 120 + generacion."""
+    """Estimacion de segundos de un pod de imagenes: (arranque + pesos de cada modelo extra + 30 + generacion) x MARGEN_IMG."""
     ms = list(grupo["modelos"])
     seg = max(MODELOS_IMG[m]["arranque"] for m in ms) + sum(MODELOS_IMG[m]["pesos_s"] for m in ms) - max(MODELOS_IMG[m]["pesos_s"] for m in ms)
-    seg += 120 + sum(len(grupo["modelos"][m]) * nvar * MODELOS_IMG[m]["seg_img"] for m in ms)
-    return seg
+    seg += 30 + sum(len(grupo["modelos"][m]) * nvar * MODELOS_IMG[m]["seg_img"] for m in ms)
+    return seg * MARGEN_IMG
 
 
 TIPOS_RIG = ("humanoide", "criatura")
