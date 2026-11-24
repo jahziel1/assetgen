@@ -200,3 +200,18 @@ trozos de la torre (ventana, techo) junto con las aspas: **falla parcialmente**.
 La deteccion con `pod get` + conexion SSH marco "listo" 1-3 s despues de que el contenedor paso a `running`, siempre con `fuente_listo: pod_get`
 (`ssh info` no hizo falta). Casi todo el arranque es la descarga de la imagen (~11 GB). Resultados: `velador` con 5 clips Quaternius (camina bien, 48k caras, 22 huesos
 en el rig), `lobo` y `caballo` riggeados con Puppeteer (41 y 38 huesos) sin clips; `rig.sh` salio con rc=139 (segfault de bpy al cerrar) y se acepto por existir el GLB.
+
+## Prueba con las imagenes unificadas (2026-11-24, `pruebas4/e2e4`)
+
+`barril` (objeto, `qwen`) y `velador` (humanoide, `zimage`, `pose: a`), preset `medio`, 2 variantes, A40 ($0.59/h). `imagenes` -> `construir`.
+
+| Pod | Imagen | Contenedor `running` / SSH listo | Pesos listos | Generacion | Costo |
+|---|---|---|---|---|---|
+| imagenes (qwen + zimage, **1 pod**) | `assetgen-imagen` (10.5 GB) | 262 s / 264.5 s | qwen 312.6 s, zimage 411.3 s | 71 s + 89 s (2 + 2 imagenes) | $0.083 |
+| 3d + rig (**1 pod**) | `assetgen-3d` (15.3 GB) | ~385 s / 387.4 s | trellis2 470.5 s, puppeteer 1059.8 s | 3D 481 s (2 assets), rig 84 s (1 humanoide) | $0.189 |
+| **Total** | | 652 s de arranque en 2 pods | | | **$0.272** |
+
+Frente a e2e3 (A6000, 4 pods, arranque 154 + 147 + 279 + 314 = 894 s, $0.454 con 3 assets y 8 + 4 imagenes): 2 pods en vez de 4 y 242 s menos de arranque total (-27 %).
+El arranque por pod no baja (imagen: 264 s vs ~150 s, mismo tamano de capas propias, otro host; 3d: 387 s para 7.9 GB propios frente a 279-314 s para 3.5 y 4.3 GB), lo que
+ahorra tiempo es no repetir pods. La A40 es mas lenta que la A6000 en 3D (481 s para 2 assets). Resultado: barril 47k caras sin clips; velador con 5 clips Quaternius, 22 huesos, 48k caras
+(hojas en `pruebas4/e2e4/hoja_imagenes.jpg` y `hoja_resultado.jpg`).
