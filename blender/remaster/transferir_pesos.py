@@ -154,16 +154,11 @@ def main():
             pose = json.load(open(arg("--pose-" + k.lower())))
             pm[k] = [PG.mul4_12(p, e) for p, e in zip(pose, enl)]
         cab = compat["cabeza"]
-        ref = max(cab, key=lambda h: masa[h])
-        rigidos, fuera = set(), {}
-        tol_g, tol_m = float(arg("--tol-grados", 3.0)), float(arg("--tol-m", 0.02))
-        for h in cab:
-            mv = [PG.movimiento_relativo(pm[k][ref], pm[k][h]) for k in "AB"]
-            ang, tr = max(m[0] for m in mv), max(m[1] for m in mv)
-            if ang <= tol_g and tr <= tol_m:
-                rigidos.add(h)
-            else:
-                fuera[h] = (round(ang, 1), round(tr, 3))
+        # referencia: el hueso dominante de la cara/craneo del original (masa de peso entre los huesos de la pieza cabeza, sin la capucha)
+        cara = PG.huesos_de(mapa, "cabeza") or sorted(cab)
+        ref = PG.hueso_referencia_cara({h: masa[h] for h in cara}, cara)
+        movs = {h: [PG.movimiento_relativo(pm[k][ref], pm[k][h]) for k in "AB"] for h in cab}
+        rigidos, fuera = PG.huesos_rigidos(ref, sorted(cab), movs, float(arg("--tol-grados", 3.0)), float(arg("--tol-m", 0.02)))
         log("cabeza: hueso de referencia %d; rigidos con ella %s; secundarios descartados %s" % (ref, sorted(rigidos), fuera))
         compat["cabeza"] = rigidos
         cabeza_descartados = {str(h): v for h, v in fuera.items()}

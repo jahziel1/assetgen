@@ -139,5 +139,19 @@ class Movimiento(unittest.TestCase):
         self.assertAlmostEqual(M[0][3], 0.0); self.assertAlmostEqual(M[2][3], 0.0)
 
 
+class CabezaReferencia(unittest.TestCase):
+    def test_referencia_es_el_hueso_de_mas_masa_de_la_cara(self):
+        masa = {4: 229.0, 5: 7.0, 9: 47.0, 44: 220.0}
+        self.assertEqual(PG.hueso_referencia_cara(masa, [4, 5, 9]), 4)        # la capucha (44) no entra en la eleccion
+        self.assertEqual(PG.hueso_referencia_cara([0, 0, 0, 0, 3.0, 9.0], [4, 5]), 5)   # tambien con lista, sin indice fijo
+
+    def test_rigidos_y_descartados(self):
+        mov = {7: [(0.1, 0.003), (0.0, 0.0)], 8: [(10.3, 0.3), (8.0, 0.2)], 12: [(1.0, 0.05), (1.0, 0.0)]}
+        rig, fuera = PG.huesos_rigidos(4, [4, 7, 8, 12], mov)
+        self.assertEqual(rig, {4, 7})
+        self.assertEqual(set(fuera), {8, 12})
+        self.assertEqual(fuera[8], (10.3, 0.3))
+
+
 if __name__ == "__main__":
     unittest.main()

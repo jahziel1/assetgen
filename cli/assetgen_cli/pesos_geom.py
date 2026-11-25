@@ -155,6 +155,27 @@ def movimiento_relativo(Mref, M):
     return math.degrees(math.acos(c)), math.sqrt(R[0][3] ** 2 + R[1][3] ** 2 + R[2][3] ** 2)
 
 
+def hueso_referencia_cara(masa, huesos_cara):
+    """Hueso dominante de la cara/craneo: el de mas masa de peso entre los huesos de la pieza `cabeza` del original (sin la capucha, cuyos
+    huesos cuelgan del cuello y pueden pesar casi igual). Sin numero fijo: sirve para cualquier modelo con una pieza cabeza."""
+    return max(huesos_cara, key=lambda h: masa.get(h, 0.0) if isinstance(masa, dict) else masa[h])
+
+
+def huesos_rigidos(ref, candidatos, movimientos, tol_grados=3.0, tol_m=0.02):
+    """Huesos que siguen a `ref` como un solido: `movimientos[h]` = [(angulo, traslacion) de M_ref^-1 . M_h en cada pose capturada].
+    Devuelve (rigidos, descartados {h: (grados, m)}); `ref` siempre es rigido."""
+    rigidos, fuera = {ref}, {}
+    for h in candidatos:
+        if h == ref:
+            continue
+        ang, tr = max(m[0] for m in movimientos[h]), max(m[1] for m in movimientos[h])
+        if ang <= tol_grados and tr <= tol_m:
+            rigidos.add(h)
+        else:
+            fuera[h] = (round(ang, 1), round(tr, 3))
+    return rigidos, fuera
+
+
 def suave(x, a, b):
     """Escalon suave (smoothstep) de 0 en x<=a a 1 en x>=b."""
     if b == a:
