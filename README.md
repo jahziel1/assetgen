@@ -3,6 +3,12 @@
 Pipeline de generación de assets para juegos con modelos abiertos en GPUs rentadas (RunPod):
 texto → imagen → modelo 3D con textura → rigging → animación.
 
+## Skill para Claude Code
+
+`skill/assetgen/SKILL.md` enseña a Claude el flujo completo (preguntar estilo y calidad, proponer `assetgen.yaml`, imágenes con hoja de
+contacto, construir, revisar y llevar a Godot) con control de gasto. Instalación:
+`ln -s "$(pwd)/skill/assetgen" ~/.claude/skills/assetgen` (desde la raíz del repo). Pon `cli/bin` en el PATH o define `ASSETGEN_HOME`.
+
 ## Imágenes Docker (GHCR)
 
 Dos imagenes de uso diario (unificadas), construidas con GitHub Actions (`.github/workflows/build.yml`). Base:
