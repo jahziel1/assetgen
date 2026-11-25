@@ -5,7 +5,7 @@
         [--validar modelo_poseA.glb [--grupos grupos.json] [--validar-pose A|B]]
 
 Entrada
-  * glb: una o varias mallas; cada vertice tiene pesos en grupos llamados `h00`, `h01`... (hueso global NN). Se usan los 4 mayores.
+  * glb (o .blend): una o varias mallas; cada vertice tiene pesos en grupos llamados `h00`, `h01`... (hueso global NN). Se usan los 4 mayores.
   * --pose-a/--pose-b: JSON = lista (un elemento por hueso global) de 12 floats: base 3x3 por COLUMNAS + traslacion, que llevan el espacio
     bind ORIGINAL del hueso a la pantalla del juego (x derecha, y abajo, z hacia dentro).
   * --enlace: igual formato; lleva el bind ORIGINAL del hueso al bind en que estan los vertices del glb. Hace falta cuando hay piezas con
@@ -48,8 +48,11 @@ def limpiar():
 
 
 def importar(ruta):
-    limpiar()
-    bpy.ops.import_scene.gltf(filepath=ruta)
+    if ruta.lower().endswith(".blend"):         # p. ej. el proxy con pesos de `transferir_pesos.py`
+        bpy.ops.wm.open_mainfile(filepath=ruta)
+    else:
+        limpiar()
+        bpy.ops.import_scene.gltf(filepath=ruta)
     # el importador crea una «Icosphere» como forma de hueso: se descartan las mallas sin grupos de vertices (no son piel)
     mallas = [o for o in bpy.context.scene.objects if o.type == "MESH"]
     return [o for o in mallas if o.vertex_groups] or mallas
@@ -95,9 +98,10 @@ def volumen_con_signo(P, T):
 
 
 def guardar_imagen(img, ruta):
-    img.filepath_raw = ruta
-    img.file_format = "JPEG"
-    img.save()
+    # save_render respeta el formato pedido tambien en imagenes generadas/empaquetadas (img.save() las dejaba en PNG con extension .jpg)
+    ajustes = bpy.context.scene.render.image_settings
+    ajustes.file_format, ajustes.color_mode, ajustes.quality = "JPEG", "RGB", 92
+    img.save_render(ruta)
 
 
 def texturas(objs, salida):
