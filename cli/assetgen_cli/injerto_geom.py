@@ -100,3 +100,28 @@ def invertir_similitud(s, r, t):
     si = 1.0 / s
     ti = [-si * sum(rt[i][j] * t[j] for j in range(3)) for i in range(3)]
     return si, rt, ti
+
+
+def suavizar(t):
+    """Escalon suave (smoothstep) de 0 a 1 para t en [0, 1]."""
+    t = max(0.0, min(1.0, t))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def peso_frente(theta, sector, transicion, frente=-math.pi / 2):
+    """Peso 1 en el sector frontal (|theta - frente| <= sector), 0 fuera de sector + transicion, suave entre ambos. Angulos en radianes;
+    el frente por defecto es -Y (theta = atan2(y - y0, x))."""
+    d = abs((theta - frente + math.pi) % (2 * math.pi) - math.pi)
+    if d <= sector:
+        return 1.0
+    if transicion <= 0 or d >= sector + transicion:
+        return 0.0
+    return 1.0 - suavizar((d - sector) / transicion)
+
+
+def peso_lateral(x, x_fin, x_ancho):
+    """Peso 1 para |x| <= x_fin - x_ancho, 0 en |x| >= x_fin, suave entre ambos (hace que el corte frontal muera antes del borde de la
+    huella |x| < x_fin y no deje una pared vertical)."""
+    if x_ancho <= 0:
+        return 1.0 if abs(x) < x_fin else 0.0
+    return 1.0 - suavizar((abs(x) - (x_fin - x_ancho)) / x_ancho)

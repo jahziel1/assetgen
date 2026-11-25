@@ -74,5 +74,42 @@ class TestSimilitud(unittest.TestCase):
                 self.assertAlmostEqual(a, b, places=9)
 
 
+class TestCorteFrontal(unittest.TestCase):
+    def test_suavizar(self):
+        self.assertEqual(IG.suavizar(-1), 0.0)
+        self.assertEqual(IG.suavizar(2), 1.0)
+        self.assertAlmostEqual(IG.suavizar(0.5), 0.5)
+
+    def test_peso_frente(self):
+        sec, tr = math.radians(40), math.radians(30)
+        self.assertEqual(IG.peso_frente(-math.pi / 2, sec, tr), 1.0)                      # justo al frente (-Y)
+        self.assertEqual(IG.peso_frente(math.radians(-90 + 40), sec, tr), 1.0)            # borde del sector
+        self.assertEqual(IG.peso_frente(math.pi / 2, sec, tr), 0.0)                       # atras
+        self.assertEqual(IG.peso_frente(math.radians(-90 + 75), sec, tr), 0.0)            # pasada la transicion
+        w = IG.peso_frente(math.radians(-90 + 55), sec, tr)                               # mitad de la transicion
+        self.assertAlmostEqual(w, 0.5)
+
+    def test_peso_frente_simetrico_y_con_vuelta(self):
+        sec, tr = math.radians(30), math.radians(20)
+        for d in (35, 42, 49):
+            a = IG.peso_frente(math.radians(-90 + d), sec, tr)
+            b = IG.peso_frente(math.radians(-90 - d), sec, tr)
+            self.assertAlmostEqual(a, b)
+        # 270 grados == -90 grados
+        self.assertEqual(IG.peso_frente(math.radians(270), sec, tr), 1.0)
+
+    def test_peso_frente_monotono(self):
+        sec, tr = math.radians(30), math.radians(30)
+        ws = [IG.peso_frente(math.radians(-90 + d), sec, tr) for d in range(0, 80, 5)]
+        self.assertTrue(all(a >= b for a, b in zip(ws, ws[1:])))
+
+    def test_peso_lateral(self):
+        self.assertEqual(IG.peso_lateral(0.0, 0.25, 0.08), 1.0)
+        self.assertEqual(IG.peso_lateral(0.25, 0.25, 0.08), 0.0)
+        self.assertEqual(IG.peso_lateral(-0.3, 0.25, 0.08), 0.0)
+        self.assertAlmostEqual(IG.peso_lateral(-0.21, 0.25, 0.08), 0.5)
+        self.assertEqual(IG.peso_lateral(0.1, 0.25, 0.0), 1.0)                            # sin fundido: escalon
+
+
 if __name__ == "__main__":
     unittest.main()

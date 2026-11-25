@@ -14,8 +14,15 @@ Metodo:
      alta del cuerpo (fraccion `--region-cuerpo` del alto); varias escalas iniciales, gana la de menor error.
   3. Corte del cuerpo: se quita lo que queda dentro de la huella de la capucha (|x_cabeza| < x_max) por encima de f' + `--solape`,
      con f' = f llevada al espacio del cuerpo. Entre ambos cortes queda un solape (la capucha monta sobre el cuerpo).
+  3b. Corte frontal: por delante (sector en azimut `--corte-frente sector,transicion,bajada,fundido_x,eje`, ver abajo) el corte de la
+     cabeza y el del cuerpo bajan `bajada` unidades de la cabeza (con transicion suave en azimut y fundido en x): la cabeza conserva su
+     cuello y el arranque del pecho hasta la V del chaleco y el cuerpo pierde lo que quedaria detras, de modo que el cuello de la cabeza
+     tapa la union. El ajuste ICP usa la cabeza sin ese corte. Se quitan ademas los triangulos muy estirados (`--estirado`) y las islas.
   4. Se unen en una malla con dos materiales (cuerpo y cabeza), se escala a `--alto` con los pies en z = 0, centrado en x/y,
      mirando a -Y, y se exportan <nombre>.blend y <nombre>.glb. Se guarda <nombre>_ajuste.json (escala, giro, errores).
+Parametros del corte frontal (unidades de la cabeza): sector = semiancho en grados alrededor de -Y (50), transicion = grados de fundido
+suave (30), bajada = cuanto baja el corte bajo el ribete (0.12), fundido_x = ancho del fundido antes del borde |x| < x_max (0.08),
+eje = desplazamiento hacia atras del vertice del sector respecto al centro del lazo del ribete (0.12; el cuello queda detras de el).
 Imprime 'INJERTO {resumen}'."""
 import json
 import math
@@ -169,12 +176,36 @@ def islas_pequenas(ob, min_frac=0.02):
     return mask, info
 
 
+def tris_estirados(ob, k, zona=None):
+    """Mascara (sobre loop_triangles) de los triangulos cuya arista mayor supera `k` veces la mediana de las aristas mayores del objeto
+    (caras muy estiradas, tipicas de los colgajos de un corte), solo donde `zona(centros)` sea cierto (todo el objeto si es None).
+    k <= 0 la desactiva."""
+    co, _, _, vt = T._malla(ob)
+    if k <= 0:
+        return np.zeros(len(vt), bool)
+    P = co[vt].astype(np.float64)
+    emax = np.max(np.stack([np.linalg.norm(P[:, i] - P[:, (i + 1) % 3], axis=1) for i in range(3)], 1), 1)
+    m = emax > k * np.median(emax)
+    return m if zona is None else m & zona(P.mean(1))
+
+
 def aplicar_matriz(ob, M):
     ob.matrix_world = M @ ob.matrix_world
     bpy.context.view_layer.objects.active = ob
     bpy.ops.object.select_all(action="DESELECT")
     ob.select_set(True)
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+
+def bajada_frente(P, y_eje, xmax, sector, trans, baja, fx):
+    """Cuanto se baja el corte (unidades de la cabeza) en los puntos P (n,3): `baja` por delante (sector en grados alrededor de -Y),
+    con transicion suave en azimut y un fundido en x para que muera antes del borde de la huella."""
+    th = np.arctan2(P[:, 1] - y_eje, P[:, 0])
+    w = np.zeros(len(P))
+    k = np.abs(P[:, 0]) < xmax
+    sr, tr = math.radians(sector), math.radians(trans)
+    w[k] = [IG.peso_frente(t, sr, tr) * IG.peso_lateral(x, xmax, fx) for t, x in zip(th[k], P[k, 0])]
+    return baja * w
 
 
 def vertices(ob):
@@ -262,6 +293,12 @@ def main():
     margen_cabeza = float(arg("--margen-cabeza", "0.025"))      # en unidades de la cabeza (por debajo del ribete)
     solape = float(arg("--solape", "0.003"))                    # en unidades del cuerpo (por encima del ribete llevado al cuerpo)
     region_cuerpo = float(arg("--region-cuerpo", "0.16"))
+    # corte frontal: sector (grados a cada lado del frente), transicion (grados), bajada (unidades de la cabeza bajo el ribete),
+    # fundido lateral en x (unidades de la cabeza antes del borde de la huella)
+    # y del vertice del sector: el eje de la capucha (centro del lazo del ribete) queda delante del cuello, asi que el sector se mide desde
+    # `eje` unidades de la cabeza detras de el.
+    cf_sector, cf_trans, cf_baja, cf_fx, cf_eje = [float(x) for x in arg("--corte-frente", "50,30,0.12,0.08,0.12").split(",")]
+    estirado = float(arg("--estirado", "10"))                   # arista mayor / mediana por encima de la cual un triangulo se descarta
     os.makedirs(salida, exist_ok=True)
 
     bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -278,8 +315,11 @@ def main():
     cf = np.array(cf)
     print("borde: triangulos", int(reg.sum()), "usados", n_borde, "rms (unid. cabeza)", round(rms_borde, 4), "coef", np.round(cf, 3))
     zb_tri = z_borde(cf, tc)
-    mantener_h = (tc[:, 2] > zb_tri - margen_cabeza) & (np.abs(tc[:, 0]) < xmax)
-    pts_h = co_h[np.unique(vt_h[mantener_h])]
+    baja_h = bajada_frente(tc, cf[0] + cf_eje, xmax, cf_sector, cf_trans, cf_baja, cf_fx)
+    print("borde z en el frente (unid. cabeza)", round(float(z_borde(cf, np.array([[0.0, cf[0] - 0.2, 0.0]]))[0]), 3))
+    mantener_ajuste = (tc[:, 2] > zb_tri - margen_cabeza) & (np.abs(tc[:, 0]) < xmax)     # para el ICP: sin el corte frontal
+    mantener_h = (tc[:, 2] > zb_tri - baja_h - margen_cabeza) & (np.abs(tc[:, 0]) < xmax)
+    pts_h = co_h[np.unique(vt_h[mantener_ajuste])]
     print("cabeza: triangulos conservados", int(mantener_h.sum()), "de", len(vt_h))
 
     # 2. ajuste de similitud cabeza -> cuerpo
@@ -318,11 +358,19 @@ def main():
     tcc = co_c_w[vt_c].mean(1)
     en_h = ((tcc - t) @ R) / s                       # inversa de la similitud (IG.invertir_similitud)
     zb_c = z_borde(cf, en_h)
-    quitar_c = (np.abs(en_h[:, 0]) < xmax) & (en_h[:, 2] > zb_c + solape / s)
+    baja_c = bajada_frente(en_h, cf[0] + cf_eje, xmax, cf_sector, cf_trans, cf_baja, cf_fx)
+    quitar_c = (np.abs(en_h[:, 0]) < xmax) & (en_h[:, 2] > zb_c - baja_c + solape / s)
     nq = borrar_triangulos(ob_c, quitar_c)
     print("cuerpo: triangulos quitados", nq)
     # recorte de la cabeza
     nh = borrar_triangulos(ob_h, ~mantener_h)
+    def zona_h(c):          # franja del cuello y la cabeza (unidades de la cabeza): hasta 0.3 bajo el ribete
+        return (c[:, 2] > z_borde(cf, c) - 0.3) & (np.abs(c[:, 0]) < xmax + 0.02)
+    m_e = tris_estirados(ob_h, estirado, zona_h)
+    nh += borrar_triangulos(ob_h, m_e) if m_e.any() else 0
+    m_ec = tris_estirados(ob_c, estirado, lambda c: zona_h(((c - t) @ R) / s))
+    nq += borrar_triangulos(ob_c, m_ec) if m_ec.any() else 0
+    print("triangulos estirados quitados: cabeza", int(m_e.sum()), "cuerpo", int(m_ec.sum()))
     m_h, isl_h = islas_pequenas(ob_h)
     nh += borrar_triangulos(ob_h, m_h) if m_h.any() else 0
     m_c, isl_c = islas_pequenas(ob_c)
