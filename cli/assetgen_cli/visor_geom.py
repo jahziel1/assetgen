@@ -171,3 +171,22 @@ def error_max(A, B):
         if d > mx:
             mx, ix = d, i
     return mx, ix
+
+
+def quitar_icc_jpeg(datos):
+    """Quita los segmentos APP2 `ICC_PROFILE` de un JPEG (bytes). Blender los incrusta en las imagenes sRGB y el cargador JPEG de Godot 4.x
+    rechaza el archivo (Image.load_from_file da error 16): el visor se queda con la textura plana sin avisar."""
+    if datos[:2] != b"\xff\xd8":
+        raise ValueError("no es un JPEG")
+    out, i = bytearray(datos[:2]), 2
+    while i + 4 <= len(datos):
+        if datos[i] != 0xFF:
+            break
+        marca, largo = datos[i + 1], int.from_bytes(datos[i + 2:i + 4], "big")
+        if marca == 0xDA:            # inicio del escaneo: el resto son datos de imagen
+            break
+        if not (marca == 0xE2 and datos[i + 4:i + 16] == b"ICC_PROFILE\x00"):
+            out += datos[i:i + 2 + largo]
+        i += 2 + largo
+    out += datos[i:]
+    return bytes(out)

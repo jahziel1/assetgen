@@ -84,6 +84,7 @@ def leer_malla(objs):
         cn /= np.maximum(np.linalg.norm(cn, axis=1, keepdims=True), 1e-12)
         if me.uv_layers.active is not None:
             uv = np.empty(nl * 2); me.uv_layers.active.data.foreach_get("uv", uv); uv = uv.reshape(-1, 2)
+            uv[:, 1] = 1.0 - uv[:, 1]       # Blender: v hacia arriba; glTF/Godot (y el JPEG guardado): v hacia abajo
         else:
             uv = np.zeros((nl, 2))
         tl = np.empty(len(me.loop_triangles) * 3, np.int64); me.loop_triangles.foreach_get("loops", tl)
@@ -102,6 +103,10 @@ def guardar_imagen(img, ruta):
     ajustes = bpy.context.scene.render.image_settings
     ajustes.file_format, ajustes.color_mode, ajustes.quality = "JPEG", "RGB", 92
     img.save_render(ruta)
+    with open(ruta, "rb") as f:
+        datos = f.read()
+    with open(ruta, "wb") as f:          # perfil ICC fuera: el cargador JPEG de Godot rechaza el archivo y el visor usa color plano
+        f.write(VG.quitar_icc_jpeg(datos))
 
 
 def texturas(objs, salida):

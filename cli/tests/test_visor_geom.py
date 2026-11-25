@@ -111,6 +111,25 @@ class TestError(unittest.TestCase):
             V.error_max([[0, 0, 0]], [])
 
 
+def _seg(marca, carga):
+    return bytes([0xFF, marca]) + (len(carga) + 2).to_bytes(2, "big") + carga
+
+
+class TestIccJpeg(unittest.TestCase):
+    def test_quita_solo_el_perfil_icc(self):
+        jfif, com, icc = _seg(0xE0, b"JFIF\x00\x01"), _seg(0xFE, b"hola"), _seg(0xE2, b"ICC_PROFILE\x00\x00\x01" + b"x" * 40)
+        otro_app2 = _seg(0xE2, b"MPF\x00" + b"y" * 8)
+        scan = _seg(0xDA, b"\x03\x01") + b"\xff\xe2\x00\x04zz\xff\xd9"       # lo que sigue al escaneo no se toca
+        src = b"\xff\xd8" + jfif + icc + com + otro_app2 + scan
+        self.assertEqual(V.quitar_icc_jpeg(src), b"\xff\xd8" + jfif + com + otro_app2 + scan)
+
+    def test_sin_icc_queda_igual_y_valida_cabecera(self):
+        src = b"\xff\xd8" + _seg(0xE0, b"JFIF\x00") + _seg(0xDA, b"\x01") + b"datos\xff\xd9"
+        self.assertEqual(V.quitar_icc_jpeg(src), src)
+        with self.assertRaises(ValueError):
+            V.quitar_icc_jpeg(b"\x89PNG....")
+
+
 class TestScriptBlender(unittest.TestCase):
     def test_sintaxis_del_exportador(self):
         ruta = os.path.join(AQUI, "..", "..", "blender", "remaster", "exportar_visor.py")
