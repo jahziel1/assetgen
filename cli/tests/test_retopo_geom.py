@@ -107,5 +107,52 @@ class TestAtlas(unittest.TestCase):
         self.assertEqual(R.solapes([1, 1, 0], [0, 1, 1]), 1)
 
 
+class TestOrientacion(unittest.TestCase):
+    # tetraedro con normales hacia fuera (antihorario visto desde fuera)
+    CO = [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)]
+    FUERA = [(0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)]
+
+    def test_volumen_signo(self):
+        self.assertAlmostEqual(R.volumen_firmado(self.CO, self.FUERA), 1.0 / 6.0)
+        dentro = [f[::-1] for f in self.FUERA]
+        self.assertAlmostEqual(R.volumen_firmado(self.CO, dentro), -1.0 / 6.0)
+
+    def test_quad_en_abanico(self):
+        cubo = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]
+        caras = [(0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4), (2, 3, 7, 6), (1, 2, 6, 5), (3, 0, 4, 7)]
+        self.assertAlmostEqual(R.volumen_firmado(cubo, caras), 1.0)
+
+    def test_componentes_y_voltear(self):
+        # dos tetraedros separados: el segundo con normales hacia dentro
+        co = self.CO + [(p[0] + 5, p[1], p[2]) for p in self.CO]
+        caras = list(self.FUERA) + [tuple(x + 4 for x in f[::-1]) for f in self.FUERA]
+        self.assertEqual(R.etiquetas_componentes(caras), [0] * 4 + [1] * 4)
+        vols = R.orientacion_por_componente(co, caras)
+        self.assertGreater(vols[0][0], 0)
+        self.assertLess(vols[1][0], 0)
+        self.assertEqual(R.caras_a_voltear(co, caras), [4, 5, 6, 7])
+        self.assertEqual(R.caras_a_voltear(co, self.FUERA), [])
+
+    def test_componente_abierta_no_se_voltea(self):
+        # un triangulo suelto (tela de una piel) tiene "volumen" sin sentido: no se toca aunque salga negativo
+        co = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+        self.assertEqual(R.caras_a_voltear(co, [(0, 1, 2)]), [])
+        self.assertEqual(R.caras_a_voltear(co, [(0, 2, 1)]), [])
+
+
+class TestPielInterior(unittest.TestCase):
+    def test_criterio(self):
+        self.assertTrue(R.es_piel_interior(0.05, True))
+        self.assertFalse(R.es_piel_interior(0.6, True))      # concavidad abierta (entre los muslos)
+        self.assertFalse(R.es_piel_interior(0.05, False))    # sin pared fina detras: es un solido, no una tela doble
+
+    def test_direcciones(self):
+        d = R.direcciones_esfera(32)
+        self.assertEqual(len(d), 32)
+        for v in d:
+            self.assertAlmostEqual(sum(x * x for x in v), 1.0)
+        self.assertAlmostEqual(sum(v[2] for v in d), 0.0, places=6)      # equilibradas arriba/abajo
+
+
 if __name__ == "__main__":
     unittest.main()

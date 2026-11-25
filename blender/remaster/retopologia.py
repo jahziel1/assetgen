@@ -3,7 +3,8 @@
     blender -b -P retopologia.py -- separar  --entrada alto.blend --trab DIR [--material-cabeza mat_cabeza]
     blender -b -P retopologia.py -- medir    --trab DIR                                  # huecos y cuellos de botella (dedos, manga/torso)
     blender -b -P retopologia.py -- remallar --trab DIR --parte cabeza|cuerpo --voxel 0.002 --caras 3500 [--decimar 0.3]
-    blender -b -P retopologia.py -- unir     --trab DIR [--margen 0.004] [--densidad-cabeza 1.6]   # UV: un solo atlas para todas las partes
+    blender -b -P retopologia.py -- piel     --trab DIR [--partes cuerpo] [--grosor 0.015]   # quita la piel interior de las telas (mangas, perneras, cuello)
+    blender -b -P retopologia.py -- orientar --trab DIR [--desde FICHERO.blend]   # normales hacia fuera (volumen firmado > 0) por parte
 
 Sin bpy.ops sobre la malla grande: la separacion por material es numpy (sin `separate`). El remallado por voxeles (cierra capas y
 solapes) y QuadriFlow solo se aplican a cada parte por separado, nunca a la malla entera. Las partes se guardan en DIR/*.blend."""
@@ -18,8 +19,10 @@ import bmesh
 import numpy as np
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, AQUI)
 sys.path.insert(0, os.path.join(AQUI, "..", "..", "cli"))
 from assetgen_cli import retopo_geom as RG  # noqa: E402
+import orientacion as ORI  # noqa: E402
 
 a = sys.argv[sys.argv.index("--") + 1:]
 CMD = a[0] if a else ""
@@ -323,7 +326,10 @@ def cmd_remallar():
     quitadas, tapados = cerrar(w)
     log("cerrar: islas quitadas", quitadas, "caras de tapa", tapados)
     w.name = "juego_" + parte; w.data.name = "juego_" + parte
+    ori = ORI.orientar_hacia_fuera(w.data)     # recalc_face_normals puede dejar la pieza entera hacia dentro: se decide por volumen firmado
+    log("orientacion:", ori)
     topo = stats_topologia(w.data)
+    topo["orientacion"] = ori
     log("topologia:", topo)
     bm = bmesh.new(); bm.from_mesh(w.data)
     ar = np.array([f.calc_area() for f in bm.faces]); bm.free()
@@ -340,4 +346,41 @@ def cmd_remallar():
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(trab, "retopo_%s.blend" % parte), compress=True)
 
 
-{"separar": cmd_separar, "medir": cmd_medir, "remallar": cmd_remallar}.get(CMD, lambda: log("comando desconocido", CMD))()
+def cmd_orientar():
+    """Normales hacia fuera sin rehacer la retopologia. Con --desde FICHERO.blend toma los objetos `cabeza`/`cuerpo` (o `juego_*`) de ese
+    fichero y escribe DIR/retopo_<parte>.blend (objeto juego_<parte>, sin UV: las crea `hornear.py uv`); sin --desde corrige DIR/retopo_*.blend."""
+    trab, desde = arg("--trab"), arg("--desde")
+    os.makedirs(trab, exist_ok=True)
+    res = {}
+    for parte in arg("--partes", "cabeza,cuerpo").split(","):
+        bpy.ops.wm.open_mainfile(filepath=desde if desde else os.path.join(trab, "retopo_%s.blend" % parte))
+        ob = bpy.data.objects.get("juego_" + parte) or bpy.data.objects[parte]
+        for o in list(bpy.data.objects):
+            if o is not ob:
+                bpy.data.objects.remove(o)
+        ob.name = ob.data.name = "juego_" + parte
+        if desde:
+            while ob.data.uv_layers:
+                ob.data.uv_layers.remove(ob.data.uv_layers[0])
+        res[parte] = ORI.orientar_hacia_fuera(ob.data)
+        log(parte, res[parte])
+        bpy.ops.wm.save_as_mainfile(filepath=os.path.join(trab, "retopo_%s.blend" % parte), compress=True)
+        f = os.path.join(trab, "retopo_%s.json" % parte)
+        if os.path.exists(f):
+            j = json.load(open(f)); j.setdefault("topologia", {})["orientacion"] = res[parte]; json.dump(j, open(f, "w"), indent=1)
+    json.dump(res, open(os.path.join(trab, "orientacion.json"), "w"), indent=1)
+
+
+def cmd_piel():
+    """Quita la piel interior (ver orientacion.quitar_piel_interior) de DIR/retopo_<parte>.blend, antes de las UV y el horneado."""
+    trab = arg("--trab"); res = {}
+    for parte in arg("--partes", "cuerpo").split(","):
+        bpy.ops.wm.open_mainfile(filepath=os.path.join(trab, "retopo_%s.blend" % parte))
+        ob = bpy.data.objects["juego_" + parte]
+        res[parte] = ORI.quitar_piel_interior(ob.data, float(arg("--grosor", 0.015)), int(arg("--dirs", 24)), float(arg("--umbral", 0.25)))
+        log(parte, res[parte])
+        bpy.ops.wm.save_as_mainfile(filepath=os.path.join(trab, "retopo_%s.blend" % parte), compress=True)
+    json.dump(res, open(os.path.join(trab, "piel.json"), "w"), indent=1)
+
+
+{"separar": cmd_separar, "medir": cmd_medir, "remallar": cmd_remallar, "orientar": cmd_orientar, "piel": cmd_piel}.get(CMD, lambda: log("comando desconocido", CMD))()

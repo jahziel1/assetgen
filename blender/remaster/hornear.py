@@ -1,7 +1,7 @@
 """hornear.py -- UV (un atlas para todas las partes) y horneado desde la malla alta hacia las mallas del juego.
 
     blender -b -P hornear.py -- uv       --trab DIR [--margen 0.004] [--densidad-cabeza 1.6] [--angulo 66] [--partes cabeza,cuerpo]
-    blender -b -P hornear.py -- hornear  --trab DIR [--res 4096] [--extrusion 0.02] [--rayo 0.04] [--ao 1] [--muestras 16]
+    blender -b -P hornear.py -- hornear  --trab DIR [--res 4096] [--extrusion 0.02] [--rayo 0.04] [--ao 1] [--muestras 16] [--min-ao 0] [--relleno-px 0]
     blender -b -P hornear.py -- exportar --trab DIR --salida DIR [--nombre principe_juego]
 
 Entradas en --trab: altas.blend (alto_<parte> con material y texturas), retopo_<parte>.blend (juego_<parte>, de retopologia.py).
@@ -20,8 +20,10 @@ import bpy
 import numpy as np
 
 AQUI = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, AQUI)
 sys.path.insert(0, os.path.join(AQUI, "..", "..", "cli"))
 from assetgen_cli import retopo_geom as RG  # noqa: E402
+import orientacion as ORI  # noqa: E402
 
 a = sys.argv[sys.argv.index("--") + 1:]
 CMD = a[0] if a else ""
@@ -127,6 +129,9 @@ def cmd_uv():
     obs = {}
     for p in PARTES:
         o = traer(os.path.join(trab, "retopo_%s.blend" % p), ["juego_" + p])[0]
+        ori = ORI.orientar_hacia_fuera(o.data)      # antes de UV y horneado: con normales hacia dentro el rayo/jaula y el AO salen al reves
+        log("orientacion", p, ori)
+        assert ori["hacia_fuera"], "normales hacia dentro en %s: %s" % (p, ori)
         while o.data.uv_layers:
             o.data.uv_layers.remove(o.data.uv_layers[0])
         o.data.uv_layers.new(name="UVMap")
@@ -278,6 +283,7 @@ def guardar_png(arr, ruta, srgb, res):
 def cmd_hornear():
     trab = arg("--trab"); res = int(arg("--res", 4096)); extr = float(arg("--extrusion", 0.03)); rayo = float(arg("--rayo", 0.06))
     muestras = int(arg("--muestras", 16)); con_ao = arg("--ao", "1") == "1"; margen_px = int(arg("--margen-px", 16))
+    min_ao = float(arg("--min-ao", 0)); relleno_px = int(arg("--relleno-px", 0))
     bpy.ops.wm.open_mainfile(filepath=os.path.join(trab, "uv.blend"))
     disp = gpu()
     tiempos = {"dispositivo": disp}
@@ -295,10 +301,15 @@ def cmd_hornear():
     # composicion: la primera parte gana si hubiese solape de islas (se cuenta)
     solape = int(np.logical_and.reduce([mascaras[p] for p in PARTES]).sum()) if len(PARTES) > 1 else 0
     # texeles donde el rayo no impacto (color casi negro): se tratan como no cubiertos y se rellenan por dilatacion
-    valido, huecos = {}, {}
+    valido, huecos, interiores = {}, {}, {}
     for p in PARTES:
         c = datos[("COLOR", p)][..., :3].max(axis=2)
         valido[p] = mascaras[p] & (c >= 0.004)
+        if con_ao and min_ao > 0:      # AO ~ 0 = el rayo cayo en una capa interior de la malla alta (hueco en su piel exterior): texel no valido
+            ao_p = datos[("AO", p)][..., 0]
+            interior = valido[p] & (ao_p < min_ao)
+            interiores[p] = int(interior.sum())
+            valido[p] = valido[p] & ~interior
         huecos[p] = int((mascaras[p] & ~valido[p]).sum())
     cub = np.zeros((res, res), bool)
     fondos = {"COLOR": (0, 0, 0, 1), "NORMAL": (0.5, 0.5, 1, 1), "AO": (1, 1, 1, 1)}
@@ -307,10 +318,10 @@ def cmd_hornear():
         img = np.zeros((res, res, 4), np.float32); img[:] = fondos[etq]
         cub = np.zeros((res, res), bool)
         for p in reversed(PARTES):
-            img[mascaras[p]] = datos[(etq, p)][mascaras[p]]
+            img[valido[p]] = datos[(etq, p)][valido[p]]
             cub |= valido[p]
         t0 = time.time()
-        img, _c = dilatar(img, cub, margen_px + 8)
+        img, _c = dilatar(img, cub, margen_px + 8 + relleno_px)
         if etq == "NORMAL":
             n = img[..., :3] * 2 - 1
             n /= np.maximum(np.linalg.norm(n, axis=2, keepdims=True), 1e-6)
@@ -324,7 +335,7 @@ def cmd_hornear():
     cobertura = float(np.mean(np.logical_or.reduce([mascaras[p] for p in PARTES])))
     info = {"res": res, "extrusion_m": extr, "rayo_m": rayo, "muestras": muestras, "margen_px": margen_px, "tiempos_s": tiempos,
             "cobertura_atlas": round(cobertura, 3), "px_cubiertos": {p: int(mascaras[p].sum()) for p in PARTES}, "solape_px": solape,
-            "px_sin_impacto_rellenados": huecos, "ao": con_ao}
+            "px_sin_impacto_rellenados": huecos, "px_capa_interior_rellenados": interiores, "min_ao": min_ao, "ao": con_ao}
     json.dump(info, open(os.path.join(trab, "hornear.json"), "w"), indent=1)
     log("horneado listo", json.dumps(info))
 
@@ -371,7 +382,7 @@ def cmd_exportar():
         par = np.concatenate([lv[:, None].astype(np.float64), np.round(uv.astype(np.float64), 6)], axis=1)
         ini = np.empty(len(me.polygons), np.int32); me.polygons.foreach_get("loop_start", ini)
         fin = np.append(ini[1:], len(lv))
-        res["partes"][o.name] = {"vertices_malla": len(me.vertices), "vertices_con_costuras_uv": int(len(np.unique(par, axis=0))),
+        res["partes"][o.name] = {"volumen_firmado_m3": round(ORI.volumen_firmado(me), 6), "vertices_malla": len(me.vertices), "vertices_con_costuras_uv": int(len(np.unique(par, axis=0))),
                                  "quads_o_caras": len(me.polygons), "triangulos": int((fin - ini - 2).sum())}
     for p in PARTES:
         f = os.path.join(trab, "retopo_%s.json" % p)

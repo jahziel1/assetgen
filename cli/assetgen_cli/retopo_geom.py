@@ -147,3 +147,85 @@ def hueco_minimo_voxel(hueco_m, factor=2.0):
     if hueco_m <= 0:
         raise ValueError("hueco positivo")
     return hueco_m / factor
+
+
+def volumen_firmado(co, caras):
+    """Volumen con signo de una malla cerrada (suma de tetraedros con el origen; caras triangulos o poligonos en abanico).
+    Positivo = normales hacia fuera (orden antihorario visto desde fuera); negativo = hacia dentro."""
+    v = 0.0
+    for f in caras:
+        a = co[f[0]]
+        for k in range(1, len(f) - 1):
+            b, c = co[f[k]], co[f[k + 1]]
+            v += (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0
+    return v
+
+
+def etiquetas_componentes(caras):
+    """Etiqueta (0..n-1, por orden de aparicion) de la componente conexa (por vertice compartido) de cada cara."""
+    padre = {}
+
+    def raiz(x):
+        while padre.setdefault(x, x) != x:
+            padre[x] = padre[padre[x]]
+            x = padre[x]
+        return x
+
+    for f in caras:
+        r0 = raiz(f[0])
+        for v in f[1:]:
+            r = raiz(v)
+            if r != r0:
+                padre[r] = r0
+    ids, sal = {}, []
+    for f in caras:
+        sal.append(ids.setdefault(raiz(f[0]), len(ids)))
+    return sal
+
+
+def orientacion_por_componente(co, caras):
+    """[(volumen firmado, numero de caras)] por componente conexa, en el orden de `etiquetas_componentes`."""
+    et = etiquetas_componentes(caras)
+    n = max(et) + 1 if et else 0
+    sub = [[] for _ in range(n)]
+    for f, e in zip(caras, et):
+        sub[e].append(f)
+    return [(volumen_firmado(co, s), len(s)) for s in sub]
+
+
+def caras_a_voltear(co, caras):
+    """Indices de las caras de las componentes CERRADAS (todas sus aristas con 2 caras) con volumen firmado negativo (normales hacia dentro):
+    hay que voltearlas. Las componentes abiertas (telas de una sola piel) no tienen volumen que valga y no se tocan."""
+    et = etiquetas_componentes(caras)
+    vol = [v for v, _ in orientacion_por_componente(co, caras)]
+    abierta = set()
+    cuenta = {}
+    for f, e in zip(caras, et):
+        k = len(f)
+        for i in range(k):
+            x, y = f[i], f[(i + 1) % k]
+            cuenta.setdefault((e, (x, y) if x < y else (y, x)), 0)
+            cuenta[(e, (x, y) if x < y else (y, x))] += 1
+    for (e, _), n in cuenta.items():
+        if n != 2:
+            abierta.add(e)
+    return [i for i, e in enumerate(et) if e not in abierta and vol[e] < 0]
+
+
+def es_piel_interior(fraccion_escape, pared_fina, umbral=0.25):
+    """Una cara de una lamina doble (tela con piel exterior e interior) es la piel INTERIOR si hay otra cara de frente a menos del grosor
+    (`pared_fina`) y, mirando desde su lado de la normal, la mayoria de las direcciones al azar chocan con la propia malla (cavidad
+    cerrada: interior de manga, de pernera, del cuello): `fraccion_escape` < `umbral`. Las caras en una concavidad abierta (entre los
+    muslos, axila) ven el cielo en la mayoria de las direcciones y no se consideran interiores."""
+    return bool(pared_fina) and fraccion_escape < umbral
+
+
+def direcciones_esfera(n):
+    """`n` direcciones unitarias casi uniformes sobre la esfera (espiral de Fibonacci), deterministas."""
+    out = []
+    for i in range(n):
+        z = 1.0 - 2.0 * (i + 0.5) / n
+        r = math.sqrt(max(0.0, 1.0 - z * z))
+        a = i * math.pi * (3.0 - math.sqrt(5.0))
+        out.append((r * math.cos(a), r * math.sin(a), z))
+    return out

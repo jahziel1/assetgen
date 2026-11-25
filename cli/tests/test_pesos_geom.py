@@ -55,6 +55,45 @@ class Mapa(unittest.TestCase):
         self.assertEqual(PG.huesos_de(m, "brazo_I"), [20, 49])
 
 
+class Piernas(unittest.TestCase):
+    def test_mapa_piernas(self):
+        cen = {15: (0.03, 0, 1.04), 24: (0.1, 0, 0.78), 25: (0.09, 0, 0.35), 27: (-0.11, 0, 0.74), 28: (-0.11, 0, 0.35), 43: (0.23, 0, 0.81)}
+        m = PG.mapa_hueso_segmento({}, cen, 0.2, 1.48, z_pierna=0.93)
+        self.assertEqual(m[15], "cuerpo")
+        self.assertEqual(PG.huesos_de(m, "pierna_I"), [24, 25, 43])
+        self.assertEqual(PG.huesos_de(m, "pierna_D"), [27, 28])
+        self.assertEqual(PG.mapa_hueso_segmento({}, cen, 0.2, 1.48)[24], "cuerpo")      # sin z_pierna: como antes
+
+    CAD, IZQ, DER = {15: 1.0}, {24: 1.0}, {27: 1.0}
+
+    def test_lejos_de_la_banda_pierna_pura(self):
+        w = PG.pesos_entrepierna(self.CAD, self.IZQ, self.DER, 0.12, 0.6, 0.78)
+        self.assertEqual(w, {24: 1.0})
+        w = PG.pesos_entrepierna(self.CAD, self.IZQ, self.DER, -0.12, 0.6, 0.78)
+        self.assertEqual(w, {27: 1.0})
+
+    def test_bajo_la_entrepierna_el_plano_medio_separa(self):
+        # bajo la entrepierna (mas de caida_z) cada pierna es pura incluso pegada al plano medio
+        self.assertEqual(PG.pesos_entrepierna(self.CAD, self.IZQ, self.DER, 0.01, 0.5, 0.78), {24: 1.0})
+        self.assertEqual(PG.pesos_entrepierna(self.CAD, self.IZQ, self.DER, -0.01, 0.5, 0.78), {27: 1.0})
+
+    def test_entrepierna_mezcla_cadera_y_ambas_piernas(self):
+        w = PG.pesos_entrepierna(self.CAD, self.IZQ, self.DER, 0.0, 0.80, 0.78)
+        self.assertAlmostEqual(sum(w.values()), 1.0)
+        self.assertAlmostEqual(w[15], 0.5); self.assertAlmostEqual(w[24], 0.25); self.assertAlmostEqual(w[27], 0.25)
+
+    def test_continuidad_en_el_plano_medio(self):
+        a = PG.pesos_entrepierna(self.CAD, self.IZQ, self.DER, 1e-4, 0.8, 0.78)
+        b = PG.pesos_entrepierna(self.CAD, self.IZQ, self.DER, -1e-4, 0.8, 0.78)
+        for h in (15, 24, 27):
+            self.assertAlmostEqual(a[h], b[h], places=2)
+
+    def test_suave_y_mezclar(self):
+        self.assertEqual(PG.suave(-1, 0, 1), 0.0); self.assertEqual(PG.suave(2, 0, 1), 1.0); self.assertAlmostEqual(PG.suave(0.5, 0, 1), 0.5)
+        r = PG.mezclar_pesos([(0.5, {1: 1.0}), (0.5, {2: 1.0})])
+        self.assertAlmostEqual(r[1], 0.5); self.assertAlmostEqual(sum(r.values()), 1.0)
+
+
 class Suavizado(unittest.TestCase):
     def test_no_cruza_grupos(self):
         # cadena 0-1-2-3: 0,1 del grupo "a"; 2,3 del grupo "b"

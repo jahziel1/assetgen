@@ -1,11 +1,11 @@
 """estiramiento.py -- estiramiento de aristas de una malla con pesos `hNN` entre el reposo y las poses A y B del juego.
 
     blender -b -P estiramiento.py -- --malla proxy_pesos.blend --pose-a pose_A.json --pose-b pose_B.json --enlace pose_bind.json
-        [--largo-min 0.001] [--visor DIR_DATOS --articulaciones art.json] [--salida est.json]
+        [--largo-min 0.001] [--visor DIR_DATOS --articulaciones art.json [--puntos "nombre=hueso:x,y,z;..."]] [--salida est.json]
 
 Razon = longitud de la arista en la pose / longitud en reposo (skinning lineal, igual que el visor; matriz = pose . enlace^-1).
 Da percentiles, cuantas aristas pasan de 2x o bajan de 0.5x y donde (segmento del vertice, altura y lado). Con --visor y --articulaciones
-escribe ademas la posicion en el espacio del visor (Godot) de hombro, codo, rodilla y cuello en la pose B (para los primeros planos).
+escribe ademas la posicion en el espacio del visor (Godot) de hombro, codo, rodilla y cuello en la pose B (para los primeros planos), mas los `--puntos` que se pidan.
 Imprime 'ESTIRA {resumen}'."""
 import json
 import os
@@ -70,8 +70,13 @@ def main():
         art = json.load(open(arg("--articulaciones")))["articulaciones"]
         mv = json.load(open(os.path.join(arg("--visor"), "modelo.json")))["poses"]["B"]
         alvo = {}
-        for nombre, hueso in (("hombro_I", 20), ("codo_I", 21), ("rodilla_I", 25), ("cuello", 19)):
-            g = np.array(mv[hueso]); p = np.array(art[nombre])
+        objetivos = [(nombre, hueso, art[nombre]) for nombre, hueso in (("hombro_I", 20), ("codo_I", 21), ("rodilla_I", 25), ("cuello", 19))]
+        for t in (arg("--puntos") or "").split(";"):      # extra: "nombre=hueso:x,y,z;..." (punto en el espacio del modelo en reposo)
+            if t.strip():
+                nombre, _, r = t.partition("="); hueso, _, xyz = r.partition(":")
+                objetivos.append((nombre.strip(), int(hueso), [float(v) for v in xyz.split(",")]))
+        for nombre, hueso, punto in objetivos:
+            g = np.array(mv[hueso]); p = np.array(punto)
             alvo[nombre] = (np.array(g[:9]).reshape(3, 3).T @ p + g[9:12]).tolist()   # base por columnas
         res["objetivos_B_godot"] = alvo
     if arg("--salida"):

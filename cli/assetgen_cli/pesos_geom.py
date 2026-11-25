@@ -3,7 +3,7 @@ coordenadas baricentricas, mapa hueso -> segmento derivado de la posicion de los
 suavizado en el grafo de la malla y estadistica del estiramiento de aristas. Pesos = dict {hueso: peso}; vectores = listas de 3 floats."""
 import math
 
-SEGMENTOS = ("daga", "cabeza", "capucha", "cuerpo", "brazo_I", "brazo_D")
+SEGMENTOS = ("daga", "cabeza", "capucha", "cuerpo", "brazo_I", "brazo_D", "pierna_I", "pierna_D")   # el orden es el codigo del atributo `segmento`
 
 
 def _sub(a, b):
@@ -49,7 +49,7 @@ def interpolar_pesos(pesos_vertices, bary, permitidos, n=3):
     return limitar_pesos(mezcla, n, permitidos)
 
 
-def mapa_hueso_segmento(huesos_pieza, centroides, x_hombro, z_hombro, umbral_brazo=0.75, margen_z=0.3):
+def mapa_hueso_segmento(huesos_pieza, centroides, x_hombro, z_hombro, umbral_brazo=0.75, margen_z=0.3, z_pierna=None):
     """Mapa hueso global -> segmento del cuerpo, a partir de las piezas del original y de la posicion de los vertices de cada hueso.
 
     huesos_pieza: {"cabeza": [...], "daga": [...], "faldon": [...]} huesos de las piezas sueltas (cabeza, arma, faldon/capucha que
@@ -57,7 +57,9 @@ def mapa_hueso_segmento(huesos_pieza, centroides, x_hombro, z_hombro, umbral_bra
       el bind T (+X = izquierda del personaje). x_hombro, z_hombro: |x| y altura de la articulacion del hombro. Un hueso del resto es de
       brazo si su centroide cae a |x| >= umbral_brazo * x_hombro y no mas de `margen_z` por debajo del hombro (los huesos de cadera
       y falda laterales tienen la misma x pero van mucho mas abajo) (manga, antebrazo, mano; por esa regla quedan en el torso los huesos de la
-      cintura escapular 17 y 18, que el original comparte con las piezas del brazo) y del cuerpo si no."""
+      cintura escapular 17 y 18, que el original comparte con las piezas del brazo) y del cuerpo si no.
+      z_pierna (opcional): los huesos de cuerpo con el centroide por debajo de esa altura pasan a pierna_I (x > 0) o pierna_D (x <= 0);
+      por encima quedan en cuerpo (cadera, columna). Asi las dos piernas son segmentos distintos y ninguna toma huesos de la otra."""
     mapa = {}
     for seg, clave in (("cabeza", "cabeza"), ("daga", "daga"), ("capucha", "faldon")):
         for h in huesos_pieza.get(clave, []):
@@ -67,6 +69,8 @@ def mapa_hueso_segmento(huesos_pieza, centroides, x_hombro, z_hombro, umbral_bra
             continue
         if abs(c[0]) >= umbral_brazo * x_hombro and c[2] >= z_hombro - margen_z:
             mapa[h] = "brazo_I" if c[0] > 0 else "brazo_D"
+        elif z_pierna is not None and c[2] < z_pierna:
+            mapa[h] = "pierna_I" if c[0] > 0 else "pierna_D"
         else:
             mapa[h] = "cuerpo"
     return mapa
@@ -149,3 +153,33 @@ def movimiento_relativo(Mref, M):
     esc = abs(d) ** (1.0 / 3.0) or 1.0
     c = max(-1.0, min(1.0, ((R[0][0] + R[1][1] + R[2][2]) / esc - 1.0) / 2.0))
     return math.degrees(math.acos(c)), math.sqrt(R[0][3] ** 2 + R[1][3] ** 2 + R[2][3] ** 2)
+
+
+def suave(x, a, b):
+    """Escalon suave (smoothstep) de 0 en x<=a a 1 en x>=b."""
+    if b == a:
+        return 1.0 if x >= b else 0.0
+    t = min(1.0, max(0.0, (x - a) / (b - a)))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def mezclar_pesos(partes, n=3):
+    """Combinacion lineal de pesos: partes = [(coeficiente, {hueso: peso})]; devuelve los `n` mayores renormalizados."""
+    tot = {}
+    for c, w in partes:
+        for h, x in w.items():
+            tot[h] = tot.get(h, 0.0) + c * x
+    return limitar_pesos(tot, n) or {}
+
+
+def pesos_entrepierna(w_cadera, w_izq, w_der, x, z, z_ent, banda=0.08, caida_z=0.08, peso_cadera=0.5, n=3):
+    """Pesos de un vertice del cuerpo en la zona de las piernas. w_cadera = pesos solo con huesos de cadera/columna; w_izq / w_der = pesos
+    con cadera + huesos de la pierna izquierda (x > 0) / derecha. x = lado respecto al plano medio, z = altura, z_ent = altura de la entrepierna
+    (donde las dos piernas se juntan). Por debajo de la entrepierna (mas de `caida_z`) cada pierna es un segmento puro, separado por el plano
+    x = 0; en la banda |x| < `banda` por encima de la entrepierna se mezcla la pierna de cada lado con la cadera: hasta `peso_cadera` de cadera
+    en el plano medio y el resto repartido entre las dos piernas, de forma continua."""
+    kz = suave(z, z_ent - caida_z, z_ent)                       # 0 bien por debajo de la entrepierna, 1 a su altura o por encima
+    ban = max(banda * kz, 1e-9)
+    t = suave(x, -ban, ban)                                      # 0 = pierna derecha pura, 1 = izquierda pura
+    u = kz * (1.0 - suave(abs(x), 0.0, banda))                  # peso de la cadera: maximo en el plano medio, 0 fuera de la banda
+    return mezclar_pesos([((1.0 - u * peso_cadera) * t, w_izq), ((1.0 - u * peso_cadera) * (1.0 - t), w_der), (u * peso_cadera, w_cadera)], n)
