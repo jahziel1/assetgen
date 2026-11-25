@@ -123,7 +123,7 @@ def construir(mod, ejes):
     lista = []
     for p in piezas:
         e = {"nombre": p["nombre"], "vertices": p["vertices"], "triangulos": p["triangulos"], "tipo_indice": p["tipo_indice"],
-             "max_pesos": p["max_pesos"] if p["con_pesos"] else None, "uvs": p["uvs"], "material": p["material"],
+             "vertices_usados": p.get("vertices_usados"), "max_pesos": p["max_pesos"] if p["con_pesos"] else None, "uvs": p["uvs"], "material": p["material"],
              "huesos_usados": p["huesos_usados"]}
         if p.get("paleta_local"):
             e["paleta_local"] = p["paleta_local"]
@@ -135,7 +135,10 @@ def construir(mod, ejes):
         "tipo_indice": V(tipo, "medido") if tipo else V(None, "medido", "sin indices"),
         "max_vertices_por_pieza": V(lim, "inferido", f"limite implicito del tipo de indice {tipo}" + (" (65535 reserva el reinicio de primitiva)" if tipo == "uint16" else "")) if lim else V(None, "inferido"),
         "maximos_observados": {"origen": "medido", "vertices": max(p["vertices"] for p in piezas), "triangulos": max(p["triangulos"] for p in piezas)},
-        "totales": {"origen": "medido", "vertices": sum(p["vertices"] for p in piezas), "triangulos": sum(p["triangulos"] for p in piezas)},
+        "totales": dict({"origen": "medido", "vertices": sum(p["vertices"] for p in piezas), "triangulos": sum(p["triangulos"] for p in piezas)},
+                        **({"vertices_unicos_usados": mod["vertices_unicos_usados"],
+                            "# vertices_unicos_usados": "vertices distintos que alguna pieza referencia (un vertex buffer compartido por varias piezas cuenta una vez)"}
+                           if mod.get("vertices_unicos_usados") else {})),
         "# division": "por pieza: vertices, triangulos y huesos usados (indices de esqueleto/paleta global; paleta_local = slots del buffer)",
         "division": {"origen": "medido", "lista": lista}}
     # --- escala y ejes

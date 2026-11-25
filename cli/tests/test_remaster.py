@@ -90,6 +90,28 @@ class Layout3DMigoto(unittest.TestCase):
         with self.assertRaises(SystemExit):
             M.analizar(self.d, M.leer_layout(self.lay_path))
 
+    def test_cola_sobrante_tolerada(self):
+        pieza_falsa(self.d)
+        with open(os.path.join(self.d, "pieza_a.vb"), "ab") as f:
+            f.write(b"\0" * 16)
+        with self.assertRaises(SystemExit):                              # por defecto sigue siendo un error
+            M.analizar(self.d, M.leer_layout(self.lay_path))
+        open(self.lay_path, "w").write(LAYOUT + "tolerar_cola: true\n")
+        mod, geom = M.analizar(self.d, M.leer_layout(self.lay_path))
+        self.assertEqual(mod["piezas"][0]["vertices"], 3)
+        self.assertTrue(any("sobrantes" in a for a in mod["avisos"]))
+
+    def test_vertex_buffer_compartido(self):
+        """Dos dibujos con el mismo .vb y distinto .ib: los vertices unicos usados se cuentan una vez."""
+        v = [vertice((0, 0, 0), (1, 0, 0), (0, 0, 0, 0)), vertice((1, 0, 0), (1, 0, 0), (0, 0, 0, 0)),
+             vertice((0, 1, 0), (1, 0, 0), (0, 0, 0, 0)), vertice((1, 1, 0), (1, 0, 0), (0, 0, 0, 0))]
+        escribe_pieza(self.d, "a", v, [0, 1, 2])
+        escribe_pieza(self.d, "b", v, [1, 3, 2])
+        mod, _ = M.analizar(self.d, M.leer_layout(self.lay_path))
+        self.assertEqual([p["vertices_usados"] for p in mod["piezas"]], [3, 3])
+        self.assertEqual(mod["vertices_unicos_usados"], 4)
+        self.assertEqual(sum(p["vertices"] for p in mod["piezas"]), 8)
+
     def test_indices_auto_uint32(self):
         open(self.lay_path, "w").write(LAYOUT.replace("indices: uint16", "indices: auto"))
         escribe_pieza(self.d, "p", [vertice((0, 0, 0), (1, 0, 0), (0, 0, 0, 0)), vertice((1, 0, 0), (1, 0, 0), (0, 0, 0, 0)),

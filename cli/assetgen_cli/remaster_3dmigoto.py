@@ -7,6 +7,7 @@ layout.yaml (ejemplo en cli/ejemplos/layout_3dmigoto.yaml):
   indices: uint16             # uint16 | uint32 | auto
   huesos_divisor: 3           # opcional: el indice de hueso del buffer es un registro (indice local = valor / divisor)
   orden_bytes: little         # little | big
+  tolerar_cola: false         # true: un vertex buffer con bytes sobrantes al final (relleno del volcado) se recorta al ultimo vertice entero
   unidades: m                 # opcional
   ejes: {arriba: +y, frente: +z}   # opcional; si falta se infieren (inferido, dudoso) o se pasan por linea de comandos
 Nombres reconocidos: p/pos/posicion/position, n/normal, huesos/bones/joints, pesos/weights, uv/uv0/uv1.../texcoord, color, tangente.
@@ -17,7 +18,7 @@ Un 3DMigoto no trae esqueleto en el buffer: los huesos son indices LOCALES a la 
   pose: matrices por hueso global (12 floats = 3 columnas de la base + origen, o 16 = fila mayor 4x4); con paletas+pose se
         aplica skinning lineal para llevar cada pieza a un espacio comun (si no, las piezas quedan en su espacio bind y pueden
         no ensamblarse)."""
-import math, os, re, struct
+import hashlib, math, os, re, struct
 
 from .remaster_comun import modelo_vacio, muestrear, tam_imagen, leer_datos
 
@@ -31,9 +32,10 @@ SEM = {"p": "posicion", "pos": "posicion", "posicion": "posicion", "position": "
 
 
 class Layout:
-    def __init__(self, atributos, stride, indices, huesos_divisor, orden, unidades, ejes):
+    def __init__(self, atributos, stride, indices, huesos_divisor, orden, unidades, ejes, tolerar_cola=False):
         self.atributos, self.stride, self.indices = atributos, stride, indices
         self.huesos_divisor, self.orden, self.unidades, self.ejes = huesos_divisor, orden, unidades, ejes
+        self.tolerar_cola = tolerar_cola
 
     def attr(self, sem):
         return [a for a in self.atributos if a["sem"] == sem]
@@ -77,7 +79,8 @@ def leer_layout(ruta):
     ejes = d.get("ejes")
     if ejes and not (ejes.get("arriba") and ejes.get("frente")):
         raise SystemExit("layout: 'ejes' necesita 'arriba' y 'frente'")
-    return Layout(attrs, stride, ind, int(d.get("huesos_divisor", 1) or 1), orden, d.get("unidades"), ejes)
+    return Layout(attrs, stride, ind, int(d.get("huesos_divisor", 1) or 1), orden, d.get("unidades"), ejes,
+                  bool(d.get("tolerar_cola", False)))
 
 
 def _formato_struct(lay):
@@ -189,16 +192,25 @@ def analizar(entrada, lay, paletas=None, pose=None, texturas=None, esqueleto=Non
     todos = []
     mn, mx = [math.inf] * 3, [-math.inf] * 3
     hay_pose = bool(pose)
-    sin_paleta = []
+    sin_paleta, con_cola = [], []
+    buffers = {}      # md5 del .vb -> (vertices, indices usados por todas las piezas que lo comparten)
     for nombre, vb, ib in listar_piezas(entrada):
         datos = open(vb, "rb").read()
         if len(datos) % lay.stride:
-            raise SystemExit(f"{os.path.basename(vb)}: {len(datos)} bytes no es multiplo del stride {lay.stride}; revisa el layout")
+            if not lay.tolerar_cola:
+                raise SystemExit(f"{os.path.basename(vb)}: {len(datos)} bytes no es multiplo del stride {lay.stride}; revisa el layout "
+                                 f"(si el volcado trae relleno al final, pon 'tolerar_cola: true' en el layout)")
+            cola = len(datos) % lay.stride
+            con_cola.append(f"{nombre} ({cola} B)")
+            datos = datos[:len(datos) - cola]
         n = len(datos) // lay.stride
+        compartido = buffers.setdefault(hashlib.md5(datos).hexdigest(), [n, set()])
         idx, tipo_idx = _leer_indices(open(ib, "rb").read(), lay.indices, lay.orden, n)
         if len(idx) % 3:
             mod["avisos"].append(f"{nombre}: {len(idx)} indices no es multiplo de 3 (se ignoran los sobrantes)")
         tris = [tuple(idx[k:k + 3]) for k in range(0, len(idx) - len(idx) % 3, 3)]
+        usados = set(idx)
+        compartido[1] |= usados
         pal = _paleta_de(paletas, nombre)
         if paletas and pal is None:
             sin_paleta.append(nombre)
@@ -248,7 +260,7 @@ def analizar(entrada, lay, paletas=None, pose=None, texturas=None, esqueleto=Non
         if smin is not None and smin < 0.99:
             mod["avisos"].append(f"{nombre}: hay vertices cuyos pesos suman {smin:.3f} (<1)")
         mod["piezas"].append({
-            "nombre": nombre, "vertices": n, "triangulos": len(tris), "tipo_indice": tipo_idx,
+            "nombre": nombre, "vertices": n, "vertices_usados": len(usados), "triangulos": len(tris), "tipo_indice": tipo_idx,
             "max_pesos": max_p, "suma_pesos": [round(smin, 5), round(smax, 5)] if smin is not None else None,
             "huesos_usados": sorted(globales) if globales else sorted(slots) if not paletas else [],
             "paleta_local": sorted(slots) if con else [],
@@ -259,11 +271,14 @@ def analizar(entrada, lay, paletas=None, pose=None, texturas=None, esqueleto=Non
     if not (hay_pose and paletas):
         mod["avisos"].append("sin --pose y --paletas las piezas quedan en su espacio bind; pueden no ensamblarse en un solo cuerpo "
                              "(la altura y los renders no son fiables)")
+    if con_cola:
+        mod["avisos"].append("bytes sobrantes al final del vertex buffer ignorados (tolerar_cola) en " + str(len(con_cola)) + " pieza(s): " + ", ".join(con_cola))
     if sin_paleta:
         mod["avisos"].append("piezas sin paleta en --paletas: " + ", ".join(sin_paleta))
     if a_hue and not paletas:
         mod["avisos"].append("los huesos del buffer son indices LOCALES a la paleta de cada pieza (huesos_usados = slots locales); "
                              "pasa --paletas para llevarlos a huesos globales")
+    mod["vertices_unicos_usados"] = sum(len(u) for _, u in buffers.values())     # un .vb compartido por varias piezas cuenta una vez
     mod["bbox"] = [[round(v, 6) for v in mn], [round(v, 6) for v in mx]]
     mod["muestra_puntos"] = muestrear(todos)
     if texturas:

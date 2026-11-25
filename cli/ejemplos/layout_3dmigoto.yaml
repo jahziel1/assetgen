@@ -8,6 +8,7 @@ atributos: "3f p, 3f n, 4h huesos, 3f pesos, 2f uv"
 stride: 52              # opcional: se comprueba contra la suma de los atributos
 indices: uint16         # tipo de los .ib: uint16 | uint32 | auto
 orden_bytes: little
+# tolerar_cola: true   # opcional: el .vb trae bytes de relleno al final (no multiplo del stride); se recortan con un aviso
 # Los indices de hueso del buffer son registros de la paleta de constantes de la pieza (0, 3, 6, ...): slot local = valor / divisor.
 huesos_divisor: 3
 # Ejes del juego (opcionales): hacia donde es "arriba" y hacia donde mira el personaje. Si faltan se infieren (inferido, revisalo).
