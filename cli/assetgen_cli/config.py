@@ -2,6 +2,7 @@
 import os
 
 from .yamlmini import leer
+from .presets import MODELOS_3D, MODELO_3D_DEF
 
 TIPOS = ("humanoide", "mecanico", "criatura")   # tipos con pipeline completo; otros (edificio, objeto...) solo imagen + 3D
 PLANTILLAS = ("vehiculo", "catapulta", "rotor")
@@ -39,6 +40,8 @@ def cargar(ruta):
     vistos = set()
     if cfg.get("modelo_imagen") is not None and cfg["modelo_imagen"] not in MODELOS_IMAGEN:
         raise SystemExit(f"{ruta}: modelo_imagen desconocido '{cfg['modelo_imagen']}' ({'|'.join(MODELOS_IMAGEN)})")
+    if cfg.get("modelo_3d") is not None and cfg["modelo_3d"] not in MODELOS_3D:
+        raise SystemExit(f"{ruta}: modelo_3d desconocido '{cfg['modelo_3d']}' ({'|'.join(MODELOS_3D)})")
     for a in cfg["assets"]:
         if not a.get("nombre"):
             raise SystemExit("assetgen.yaml: cada asset necesita 'nombre'")
@@ -63,6 +66,14 @@ def cargar(ruta):
 def modelo_imagen(cfg, asset):
     """qwen|zimage: el del asset, si no el del proyecto, si no qwen."""
     return asset.get("modelo_imagen") or cfg.get("modelo_imagen") or "qwen"
+
+
+def modelo_3d(cfg, args=None):
+    """trellis2|pixal3d: la bandera --modelo-3d, si no el modelo_3d global del yaml, si no trellis2."""
+    m = getattr(args, "modelo_3d", None) or (cfg or {}).get("modelo_3d") or MODELO_3D_DEF
+    if m not in MODELOS_3D:
+        raise SystemExit(f"modelo_3d desconocido '{m}' ({'|'.join(MODELOS_3D)})")
+    return m
 
 
 def pose_de(asset):

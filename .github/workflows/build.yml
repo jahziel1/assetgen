@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       models:
-        description: 'Imagenes a construir (JSON): imagen y 3d (nuevas); trellis2, puppeteer, qwen, zimage, hunyuan (viejas)'
+        description: 'Imagenes a construir (JSON): imagen y 3d (nuevas); pixal3d (motor 3D alternativo, imagen aparte); trellis2, puppeteer, qwen, zimage, hunyuan (viejas)'
         default: '["imagen","3d"]'
 
 permissions:

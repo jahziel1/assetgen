@@ -39,10 +39,16 @@ def planear_3d(imagenes, semillas=None, multivista=False):
     return imagenes, extras, salidas
 
 
+def comando_3d(motor, env):
+    """Comando ssh que corre el script del motor en el pod (env: cadena 'K=V K=V')."""
+    m = MOTORES_3D[motor]
+    return f"mkdir -p {m['out']} && cd /root && {env} flock /root/gpu.lock {m['venv']}/bin/python {m['remoto']} /root/in {m['out']}"
+
+
 def cmd_3d(args):
-    preset, imagenes = args.preset, {}
+    from .config import cargar, modelo_3d as resolver_modelo_3d
+    preset, imagenes, cfg = args.preset, {}, {}
     if args.config:
-        from .config import cargar
         cfg = cargar(args.config)
         preset = args.preset or cfg["preset"]
         for a in cfg["assets"]:
@@ -56,6 +62,9 @@ def cmd_3d(args):
         for f in sorted(glob.glob(os.path.join(args.input, "*"))):
             if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
                 imagenes.setdefault(os.path.splitext(os.path.basename(f))[0], f)
+    motor = resolver_modelo_3d(cfg, args)
+    if motor == "pixal3d" and args.multivista:
+        raise SystemExit("--multivista no aplica a pixal3d (solo trellis2); quita --multivista o usa --modelo-3d trellis2")
     preset = preset or "medio"
     if preset not in PRESETS_3D:
         raise SystemExit(f"preset desconocido '{preset}' (boceto|medio|alto|maximo)")
@@ -77,7 +86,8 @@ def cmd_3d(args):
 
     c = _candidatas(args)
     p = PRESETS_3D[preset]
-    seg = ARRANQUE_EST + 90 + n_salidas * p["seg_asset"]
+    seg = ARRANQUE_EST + 90 + n_salidas * seg_asset_3d(preset, motor)
+    log(f"motor 3D: {motor} (imagen {MOTORES_3D[motor]['imagen']})")
     _revisar_presupuesto(args, c, seg)
     if args.dry_run:
         log("dry-run: candidatas " + ", ".join(f"{n} ${pr:.2f}" for _, n, pr, _ in c)); return 0
@@ -90,10 +100,10 @@ def cmd_3d(args):
                 shutil.copy(extras[n + suf], os.path.join(stage, n + suf + os.path.splitext(extras[n + suf])[1].lower()))
     t = {}
     try:
-        with Sesion("3d", IMG_TRELLIS, c, args.disco, out, max_min=args.max_min, presupuesto=args.presupuesto, espera_ssh=args.timeout_arranque * 60,
-                    comando=f"3d preset={preset} n={len(pendientes)}") as s:
+        with Sesion("3d", MOTORES_3D[motor]["imagen"], c, args.disco, out, max_min=args.max_min, presupuesto=args.presupuesto, espera_ssh=args.timeout_arranque * 60,
+                    comando=f"3d modelo={motor} preset={preset} n={len(pendientes)}") as s:
             t0 = s.t_crear
-            _fase_3d(s, preset, stage, out, t, t0, extra_env)
+            _fase_3d(s, preset, stage, out, t, t0, extra_env, motor)
             gpu, precio = s.gpu, s.precio_h
     finally:
         shutil.rmtree(stage, ignore_errors=True)
@@ -103,27 +113,28 @@ def cmd_3d(args):
         assets = json.load(open(os.path.join(out, "stats.json")))
     except Exception:
         pass
-    _guardar_stats(out, {"preset": preset, "parametros": {**p["env"], **extra_env}, "gpu": gpu, "precio_h": precio, "tiempos_s": t,
+    _guardar_stats(out, {"preset": preset, "modelo_3d": motor, "parametros": {**env_3d(preset, motor), **extra_env}, "gpu": gpu, "precio_h": precio, "tiempos_s": t,
                          "costo_usd": s.costo_total, "assets": assets})
     log(f"listo: {len(rutas)} glb en {out}; tiempos {t}")
     return 0
 
 
-def _fase_3d(s, preset, stage, out, t, t0, extra_env=None):
-    """Dentro de una Sesion: sube las imagenes de `stage`, baja pesos de TRELLIS.2, genera y baja los GLB a `out`."""
-    p = PRESETS_3D[preset]
-    env = " ".join(f"{k}={v}" for k, v in {**p["env"], **(extra_env or {})}.items())
+def _fase_3d(s, preset, stage, out, t, t0, extra_env=None, motor="trellis2"):
+    """Dentro de una Sesion: sube las imagenes de `stage`, baja los pesos del motor (trellis2|pixal3d), genera y baja los GLB a `out`
+    (con pixal3d tambien `<n>.camara.json` y `<n>_entrada.png`)."""
+    m = MOTORES_3D[motor]
+    env = " ".join(f"{k}={v}" for k, v in {**env_3d(preset, motor), **(extra_env or {})}.items())
     s.subir(stage, sorted(os.listdir(stage)), "/root/in")
-    s.subir_archivo(os.path.join(RAIZ_REPO, "scripts", "run_trellis2.py"), "/root/run_trellis2_local.py")
-    log("descargando pesos (prepare_weights.sh trellis2)")
-    s.ssh("/opt/assetgen/prepare_weights.sh trellis2")
+    s.subir_archivo(os.path.join(RAIZ_REPO, "scripts", m["script"]), m["remoto"])
+    log(f"descargando pesos (prepare_weights.sh {m['pesos']})")
+    s.ssh(f"/opt/assetgen/prepare_weights.sh {m['pesos']}")
     t["pesos_listos"] = round(time.time() - t0, 1)
     log(f"pesos listos a los {t['pesos_listos']} s del pod")
     tg = time.time()
     log(f"generando ({preset}: {env})")
-    s.ssh(f"mkdir -p /root/out/trellis2 && cd /root && {env} flock /root/gpu.lock /root/venv-trellis2/bin/python /root/run_trellis2_local.py /root/in /root/out/trellis2")
+    s.ssh(comando_3d(motor, env))
     t["generacion"] = round(time.time() - tg, 1)
-    s.bajar("/root/out/trellis2", out)
+    s.bajar(m["out"], out)
     t["total_pod"] = round(time.time() - t0, 1)
     t["ssh_listo"] = s.hitos.get("ssh_listo")
     t["arranque"] = t["pesos_listos"]
@@ -326,7 +337,8 @@ def main(argv=None):
         p.add_argument("--dry-run", action="store_true", help="solo muestra GPU candidatas y estimacion")
         p.add_argument("--si", action="store_true", help="no pedir confirmacion si se superaria el tope mensual global")
 
-    p3 = sub.add_parser("3d", help="imagen -> GLB con TRELLIS.2")
+    p3 = sub.add_parser("3d", help="imagen -> GLB con TRELLIS.2 o Pixal3D (--modelo-3d)")
+    p3.add_argument("--modelo-3d", choices=list(MODELOS_3D), help="motor 3D: trellis2|pixal3d (def.: modelo_3d del yaml o trellis2; pixal3d no admite --multivista y escribe tambien <n>.camara.json y <n>_entrada.png)")
     p3.add_argument("--input", help="carpeta con PNG/JPG/WEBP")
     p3.add_argument("--config", help="assetgen.yaml (usa los assets con 'imagen')")
     p3.add_argument("--preset", choices=list(PRESETS_3D), help="boceto|medio|alto|maximo (def.: el del yaml o medio; 3d no postprocesa: usa `construir` para el postproceso del preset alto; maximo = voxel 1536, ~1M caras, textura 4096)")
@@ -350,6 +362,7 @@ def main(argv=None):
     pc.add_argument("--seleccion", help="seleccion.yaml alterno (def.: <imagenes>/seleccion.yaml)")
     pc.add_argument("--solo", help="solo estos assets (separados por coma)")
     pc.add_argument("--preset", choices=PRESETS_TODOS, help="boceto|medio|alto|aaa (def.: el del yaml). alto = 3D en calidad + quads 20k + normal map; aaa reservado")
+    pc.add_argument("--modelo-3d", choices=list(MODELOS_3D), help="motor 3D: trellis2|pixal3d (def.: modelo_3d del yaml o trellis2). Con pixal3d el 3D y el rig van en pods separados")
     pc.add_argument("--seco", action="store_true", help="solo valida config, entradas y tope mensual y muestra el plan; no enciende nada ni escribe salida")
     comunes(pc); pc.set_defaults(fn=cmd_construir)
 

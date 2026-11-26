@@ -6,6 +6,7 @@ camara: lejana         # lejana (RTS) | tercera-persona | primer-plano
 presupuesto_poligonos: 50000
 gpu_modo: normal       # normal | rapido
 variantes: 4           # variantes de imagen por asset
+modelo_3d: trellis2    # trellis2 (def.) | pixal3d (imagen propia; 3D y rig en pods separados; escribe tambien <n>.camara.json y <n>_entrada.png). Bandera: --modelo-3d
 modelo_imagen: qwen    # qwen (1328 px) | zimage (1536 px, admite pose); tambien por asset. Si se mezclan, un pod por modelo
 
 # tipo: humanoide  -> imagen en A-pose, rig (Puppeteer) y retarget de clips Quaternius UAL1 (Idle/Walk/Run/Sword_Attack/Death)

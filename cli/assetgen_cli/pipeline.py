@@ -3,7 +3,7 @@ import argparse, glob, json, os, shutil, subprocess, tempfile, time
 
 from . import globalcfg, runpod as rp, yamlmini
 from .comun import _candidatas, _revisar_presupuesto
-from .config import cargar, prompt_completo, modelo_imagen, pose_de, tamano_imagen, PLANTILLAS
+from .config import cargar, prompt_completo, modelo_imagen, modelo_3d, pose_de, tamano_imagen, PLANTILLAS
 from .glbinfo import glb_info
 from .presets import *
 from .sesion import Sesion, log
@@ -236,9 +236,10 @@ def _costo_etapa(carpeta, desde):
     return 0.0
 
 
-def modo_pod_compartido(unificadas, post, hay_rig):
-    """True si 3D y rig pueden ir en un solo pod: imagenes unificadas, hay algo que riggear y no hay postproceso local entre las etapas."""
-    return bool(unificadas and hay_rig and not post)
+def modo_pod_compartido(unificadas, post, hay_rig, motor="trellis2"):
+    """True si 3D y rig pueden ir en un solo pod: imagenes unificadas, hay algo que riggear, no hay postproceso local entre las etapas
+    y el motor 3D vive en la imagen assetgen-3d (pixal3d tiene imagen propia: nunca comparte pod)."""
+    return bool(unificadas and hay_rig and not post and motor == "trellis2")
 
 
 def _args_etapa(args, **kw):
@@ -246,19 +247,19 @@ def _args_etapa(args, **kw):
     return argparse.Namespace(**d)
 
 
-def _seco(args, cfg, preset, assets, pendientes, entradas):
+def _seco(args, cfg, preset, assets, pendientes, entradas, motor="trellis2"):
     """--seco: valida la config y las entradas y muestra el plan y la estimacion, sin encender nada ni escribir salida."""
     p = PRESETS_3D[preset]
     n_rig = sum(1 for a in pendientes if a.get("tipo") in TIPOS_RIG)
     seg = 0
-    compartido = modo_pod_compartido(UNIFICADAS, p.get("post"), n_rig > 0)
+    compartido = modo_pod_compartido(UNIFICADAS, p.get("post"), n_rig > 0, motor)
     if pendientes:
-        seg += ARRANQUE_EST + 90 + len(pendientes) * p["seg_asset"]
+        seg += ARRANQUE_EST + 90 + len(pendientes) * seg_asset_3d(preset, motor)
     if n_rig:
         seg += (0 if compartido else ARRANQUE_EST) + 120 + n_rig * RIG_SEG_ASSET
     log(f"pods: {'1 (3D + rig en el mismo pod)' if compartido else ('2 (3D y rig por separado)' if n_rig else '1 (solo 3D)')}; imagenes {'unificadas' if UNIFICADAS else 'viejas'}")
     est = args.tope * seg / 3600     # cota superior: precio maximo permitido por hora (no consulta RunPod)
-    log(f"SECO (no se enciende nada). proyecto={cfg.get('proyecto')} preset={preset}"
+    log(f"SECO (no se enciende nada). proyecto={cfg.get('proyecto')} preset={preset} modelo_3d={motor}"
         + (f" (postproceso local: quads ~{p['post']['caras']} + bake {p['post']['tex']}, antes del rig/plantilla)" if p.get("post") else ""))
     for a in assets:
         log(f"  {a['nombre']}: {a.get('tipo')}{' / ' + a['plantilla'] if a.get('plantilla') else ''}  imagen={entradas[a['nombre']]}"
@@ -293,6 +294,7 @@ def cmd_construir(args):
     if PRESETS_3D[preset].get("solo_3d"):
         raise SystemExit(f"El preset '{preset}' solo sirve para `assetgen 3d` (sin postproceso ni rig); usa boceto|medio|alto")
     post = PRESETS_3D[preset].get("post")
+    motor = modelo_3d(cfg, args)
 
     # ---- validar todo ANTES de gastar
     entradas = {}
@@ -320,7 +322,7 @@ def cmd_construir(args):
         os.makedirs(final, exist_ok=True)
     pendientes = [a for a in assets if args.forzar or not os.path.exists(os.path.join(final, a["nombre"] + ".glb"))]
     if args.seco:
-        return _seco(args, cfg, preset, assets, pendientes, entradas)
+        return _seco(args, cfg, preset, assets, pendientes, entradas, motor)
     if not pendientes:
         log("todos los assets ya tienen final/<asset>.glb (usa --forzar para rehacer)")
     # ---- 1) 3D
@@ -334,7 +336,7 @@ def cmd_construir(args):
     rig_hecho = False
     if pendientes:
         a_rig_pre = [a["nombre"] for a in pendientes if a.get("tipo") in TIPOS_RIG]
-        if modo_pod_compartido(UNIFICADAS, post, bool(a_rig_pre)):
+        if modo_pod_compartido(UNIFICADAS, post, bool(a_rig_pre), motor):
             pend3d = {a["nombre"]: os.path.join(stage, a["nombre"] + ".png") for a in pendientes
                       if args.forzar or not os.path.exists(os.path.join(d3, a["nombre"] + ".glb"))}
             rc = cmd_3d_rig(_args_etapa(args, config=None, preset=preset, out=d3), preset, pend3d, a_rig_pre, d3, drig)
@@ -342,7 +344,9 @@ def cmd_construir(args):
         else:
             if post and a_rig_pre:
                 log("preset con postproceso local antes del rig: 3D y rig van en pods separados")
-            rc = cmd_3d(_args_etapa(args, input=stage, config=None, preset=preset, out=d3))
+            elif motor != "trellis2" and a_rig_pre:
+                log(f"motor 3D {motor} (imagen propia): 3D y rig van en pods separados")
+            rc = cmd_3d(_args_etapa(args, input=stage, config=None, preset=preset, out=d3, modelo_3d=motor))
         if rc and not rig_hecho:
             return rc
     c3 = _costo_etapa(d3, t_ini)
@@ -354,7 +358,7 @@ def cmd_construir(args):
         for a in pendientes:
             n = a["nombre"]; g = os.path.join(d3, n + ".glb"); salida = os.path.join(dpost, n + ".glb")
             if not os.path.exists(g):
-                fallos[n] = "TRELLIS.2 no produjo el .glb"; continue
+                fallos[n] = f"{motor} no produjo el .glb"; continue
             if os.path.exists(salida) and os.path.getsize(salida) > 0 and not args.forzar and os.path.getmtime(salida) >= os.path.getmtime(g):
                 log(f"post/{n}.glb ya existe; no se rehace (usa --forzar)"); continue
             t = time.time()
@@ -373,7 +377,7 @@ def cmd_construir(args):
         if os.path.exists(g):
             shutil.copy(g, rig_in)
         else:
-            fallos[a["nombre"]] = "TRELLIS.2 no produjo el .glb"
+            fallos[a["nombre"]] = f"{motor} no produjo el .glb"
     if os.listdir(rig_in) and not rig_hecho:
         pres = None if args.presupuesto is None else max(args.presupuesto - c3, 0.05)
         rc = cmd_rig(_args_etapa(args, input=rig_in, out=drig, presupuesto=pres))
@@ -427,7 +431,7 @@ def cmd_construir(args):
         c_img = float(json.load(open(os.path.join(imgs, "stats.json"))).get("costo_usd", 0))
     except Exception:
         pass
-    resumen = {"proyecto": cfg.get("proyecto"), "preset": preset, "postproceso": post, "costo_3d_usd": round(c3, 4), "costo_rig_usd": round(crig, 4),
+    resumen = {"proyecto": cfg.get("proyecto"), "preset": preset, "modelo_3d": motor, "postproceso": post, "costo_3d_usd": round(c3, 4), "costo_rig_usd": round(crig, 4),
                "costo_imagenes_usd": round(c_img, 4), "costo_total_usd": round(c3 + crig + c_img, 4),
                "nota_costo": "costo por asset = parte proporcional de cada etapa (imagenes, 3D, rig)", "assets": []}
     n_tot = len(cfg["assets"])

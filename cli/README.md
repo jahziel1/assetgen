@@ -119,6 +119,10 @@ Opciones comunes de `3d` y `rig`:
 El preset `alto` en `construir`: TRELLIS.2 genera en calidad (150k caras, textura 4096) y despues se hace en local (Blender, sin GPU) remesh a quads
 (~20k, QuadriFlow) + UV + bake de normal map y ORM a 2048 con la malla de 150k como alta; recien despues se riggea o se aplica la plantilla de animacion.
 `medio` y `boceto` no postprocesan. `assetgen 3d` suelto no postprocesa (solo `construir`).
+
+Motor 3D (`modelo_3d: trellis2|pixal3d` en el yaml o `--modelo-3d` en `3d` y `construir`; la bandera gana; por defecto `trellis2`). `pixal3d` usa la imagen
+`ghcr.io/jahziel1/assetgen-pixal3d` (sobre TRELLIS.2, con camara estimada por MoGe-2), por lo que 3D y rig nunca comparten pod, y no admite `--multivista`. Junto a cada
+`<n>.glb` baja `<n>.camara.json` y `<n>_entrada.png`. Presets (resolucion / textura / caras): `boceto` 1024/1024/20k, `medio` 1024/2048/50k, `alto` 1536/4096/150k, `maximo` 1536/4096/1M; ~30 s mas por asset que TRELLIS.2.
 ## Imagenes y pods (unificadas)
 
 `imagenes` usa `ghcr.io/jahziel1/assetgen-imagen` (Qwen-Image + Z-Image en un solo venv): **un solo pod** aunque haya assets de qwen y de zimage
@@ -143,7 +147,7 @@ Los pods se llaman `assetgen-*`; `estado` y `limpiar` solo tocan esos.
 
 ## assetgen.yaml
 
-Ver `ejemplos/assetgen.yaml`. Campos: `preset`, `estilo`, `sufijo_estilo`, `variantes`, `modelo_imagen`, `tamano_imagen`, `camara`, `presupuesto_poligonos`, `gpu_modo` y la lista `assets`
+Ver `ejemplos/assetgen.yaml`. Campos: `preset`, `estilo`, `sufijo_estilo`, `variantes`, `modelo_imagen`, `modelo_3d`, `tamano_imagen`, `camara`, `presupuesto_poligonos`, `gpu_modo` y la lista `assets`
 (`nombre`, `tipo` = humanoide|mecanico|criatura|otro, `plantilla` (obligatoria en mecanico), `prompt` y/o `imagen`, `modelo_imagen`, `pose`, `tamano_imagen`, `literal`). `3d --config` usa los assets con `imagen`.
 Animacion guiada por video no esta en el CLI.
 

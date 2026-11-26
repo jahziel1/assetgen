@@ -14,6 +14,7 @@ IMG_ZIMAGE = "ghcr.io/jahziel1/assetgen-zimage:latest"
 IMG_TRELLIS_VIEJA = "ghcr.io/jahziel1/assetgen-trellis2:latest"
 IMG_PUPPETEER_VIEJA = "ghcr.io/jahziel1/assetgen-puppeteer:latest"
 IMG_TRELLIS = IMG_3D if UNIFICADAS else IMG_TRELLIS_VIEJA
+IMG_PIXAL3D = "ghcr.io/jahziel1/assetgen-pixal3d:latest"    # Pixal3D (sobre TRELLIS.2): imagen propia, no se comparte pod con el rig
 IMG_PUPPETEER = IMG_3D if UNIFICADAS else IMG_PUPPETEER_VIEJA
 
 # Parametros de run_trellis2.py por preset (variables de entorno) y estimacion de segundos por asset.
@@ -29,6 +30,35 @@ PRESETS_3D = {
     "maximo": {"env": {"PIPELINE_TYPE": "1536_cascade", "TEX_SIZE": "4096", "DECIM": "1000000", "MAX_GLB_MB": "400"}, "seg_asset": 220,
                "solo_3d": True},
 }
+# Motores 3D (imagen -> GLB): trellis2 (por defecto) y pixal3d. Cada uno con su imagen, script local, venv y carpeta de salida en el pod.
+MODELOS_3D = ("trellis2", "pixal3d")
+MODELO_3D_DEF = "trellis2"
+MOTORES_3D = {
+    "trellis2": {"imagen": IMG_TRELLIS, "script": "run_trellis2.py", "remoto": "/root/run_trellis2_local.py",
+                 "venv": "/root/venv-trellis2", "out": "/root/out/trellis2", "pesos": "trellis2"},
+    "pixal3d": {"imagen": IMG_PIXAL3D, "script": "run_pixal3d.py", "remoto": "/root/run_pixal3d_local.py",
+                "venv": "/root/venv-pixal3d", "out": "/root/out/pixal3d", "pesos": "pixal3d"},
+}
+# Variables de entorno de run_pixal3d.py por preset; la estimacion por asset es la de TRELLIS + SEG_EXTRA_PIXAL3D.
+ENV_PIXAL3D = {
+    "boceto": {"RESOLUTION": "1024", "TEX_SIZE": "1024", "DECIM": "20000"},
+    "medio": {"RESOLUTION": "1024", "TEX_SIZE": "2048", "DECIM": "50000"},
+    "alto": {"RESOLUTION": "1536", "TEX_SIZE": "4096", "DECIM": "150000"},
+    "maximo": {"RESOLUTION": "1536", "TEX_SIZE": "4096", "DECIM": "1000000", "MAX_GLB_MB": "400"},
+}
+SEG_EXTRA_PIXAL3D = 30
+
+
+def env_3d(preset, modelo=MODELO_3D_DEF):
+    """Variables de entorno del script del motor para el preset."""
+    return dict(ENV_PIXAL3D[preset] if modelo == "pixal3d" else PRESETS_3D[preset]["env"])
+
+
+def seg_asset_3d(preset, modelo=MODELO_3D_DEF):
+    """Segundos estimados por asset (o por salida) segun preset y motor."""
+    return PRESETS_3D[preset]["seg_asset"] + (SEG_EXTRA_PIXAL3D if modelo == "pixal3d" else 0)
+
+
 # Presets reservados: se aceptan en la linea de comandos y el yaml pero construir se niega a correrlos (no hay GPU ni receta aun).
 PRESETS_RESERVADOS = ("aaa",)
 PRESETS_TODOS = list(PRESETS_3D) + list(PRESETS_RESERVADOS)

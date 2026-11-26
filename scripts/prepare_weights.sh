@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Descarga los pesos del modelo (no van dentro de la imagen). Uso: prepare_weights.sh <trellis2|hunyuan|puppeteer|qwen|qwen_edit|zimage>
+# Descarga los pesos del modelo (no van dentro de la imagen). Uso: prepare_weights.sh <trellis2|pixal3d|hunyuan|puppeteer|qwen|qwen_edit|zimage>
 # Idempotente. Respeta HF_HOME / HF_TOKEN si estan definidos.
 set -euo pipefail
 export PATH=/usr/local/cuda/bin:$PATH CUDA_HOME=/usr/local/cuda
 MODEL="${1:-${ASSETGEN_MODEL:-}}"
-[ -n "$MODEL" ] || { echo "uso: $0 <trellis2|hunyuan|puppeteer|qwen|qwen_edit|zimage>"; exit 2; }
+[ -n "$MODEL" ] || { echo "uso: $0 <trellis2|pixal3d|hunyuan|puppeteer|qwen|qwen_edit|zimage>"; exit 2; }
 
 case "$MODEL" in
   trellis2)
@@ -14,6 +14,39 @@ case "$MODEL" in
     if [ ! -f /root/dinov3-vitl16-hf/config.json ]; then
       CUDA_VISIBLE_DEVICES= $PY /opt/assetgen/convert_dinov3_timm_to_hf.py /root/dinov3-vitl16-hf
     fi
+    ;;
+  pixal3d)
+    PY=/root/venv-pixal3d/bin/python
+    # Todo lo que pide el codigo de Pixal3D (inference.py + pixal3d/pipelines), ninguno gated:
+    #  - TencentARC/Pixal3D (MIT): pipeline.json + los ckpts de una imagen. Incluye TAMBIEN los decodificadores (ss_dec, shape_dec, tex_dec):
+    #    pipeline.json los referencia como "<repo>/ckpts/..." dentro del mismo repo, asi que NO hace falta microsoft/TRELLIS.2-4B.
+    #    Se excluyen los ckpts *_mv (multivista, no usado; ~22 GB).
+    #  - Ruicheng/moge-2-vitl (MIT): estimacion de camara (MoGe-2).
+    #  - camenduru/dinov3-vitl16-pretrain-lvd1689m: espejo PUBLICO (no gated) de facebook/dinov3-vitl16-pretrain-lvd1689m; es el que usa inference.py (DINOv3 License).
+    #  - ZhengPeng7/BiRefNet (MIT): quitar fondo. El pipeline.json pide briaai/RMBG-2.0 (gated y no comercial); run_pixal3d.py lo sustituye por este.
+    #  - valeoai/NAF (Apache 2.0): upsampler de features; el codigo lo carga con torch.hub (repo de GitHub + checkpoint de un release), se deja en la cache de torch.hub.
+    $PY - <<'PYEOF'
+import os, shutil, tempfile, urllib.request, zipfile
+from huggingface_hub import snapshot_download as s
+s("TencentARC/Pixal3D", allow_patterns=["pipeline.json", "LICENSE", "NOTICE", "ckpts/*_bf16.json", "ckpts/*_bf16.safetensors", "ckpts/*_fp16.json", "ckpts/*_fp16.safetensors"])
+s("Ruicheng/moge-2-vitl")
+s("camenduru/dinov3-vitl16-pretrain-lvd1689m")
+s("ZhengPeng7/BiRefNet")
+import torch
+NAF_SHA = "37f2dfc180f2de53d98bd601109c0da0dd6b0f43"
+NAF_CKPT = "https://github.com/valeoai/NAF/releases/download/model/naf_release.pth"
+hub = torch.hub.get_dir(); os.makedirs(hub, exist_ok=True)
+dst = os.path.join(hub, "valeoai_NAF_main")   # nombre que busca torch.hub.load("valeoai/NAF", ...) sin ref
+if not os.path.isdir(os.path.join(dst, "src")):
+    shutil.rmtree(dst, ignore_errors=True)
+    with tempfile.TemporaryDirectory(dir=hub) as t:
+        zp = os.path.join(t, "naf.zip")
+        urllib.request.urlretrieve(f"https://github.com/valeoai/NAF/archive/{NAF_SHA}.zip", zp)
+        zipfile.ZipFile(zp).extractall(t)
+        os.rename(os.path.join(t, f"NAF-{NAF_SHA}"), dst)
+torch.hub.load_state_dict_from_url(NAF_CKPT, map_location="cpu", progress=False)   # cachea hub/checkpoints/naf_release.pth
+print("NAF listo en", dst)
+PYEOF
     ;;
   hunyuan)
     PY=/root/venv-hunyuan/bin/python
