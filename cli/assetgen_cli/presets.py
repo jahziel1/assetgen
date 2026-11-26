@@ -37,7 +37,8 @@ MOTORES_3D = {
     "trellis2": {"imagen": IMG_TRELLIS, "script": "run_trellis2.py", "remoto": "/root/run_trellis2_local.py",
                  "venv": "/root/venv-trellis2", "out": "/root/out/trellis2", "pesos": "trellis2"},
     "pixal3d": {"imagen": IMG_PIXAL3D, "script": "run_pixal3d.py", "remoto": "/root/run_pixal3d_local.py",
-                "venv": "/root/venv-pixal3d", "out": "/root/out/pixal3d", "pesos": "pixal3d"},
+                "venv": "/root/venv-pixal3d", "out": "/root/out/pixal3d", "pesos": "pixal3d",
+                "solo48": True},   # medido 2026-11-25: pico de 30.7 GB de VRAM a 1024 en A6000
 }
 # Variables de entorno de run_pixal3d.py por preset; la estimacion por asset es la de TRELLIS + SEG_EXTRA_PIXAL3D.
 ENV_PIXAL3D = {

@@ -33,10 +33,23 @@ Si el proyecto no tiene `assetgen.yaml`, haz **una sola ronda** de preguntas (co
 Modelo de imagen según el estilo: **estilizado → `qwen`** (Qwen-Image + Lightning, el más fiel al prompt); **realista → `zimage`** (Z-Image Turbo,
 mejor piel y textura; en humanoides que se riggean usa `pose: a` con ControlNet de pose); objetos, máquinas, criaturas y edificios → `qwen`.
 
+Motor 3D (`modelo_3d` en el yaml o `--modelo-3d` en `3d`/`construir`):
+- **`trellis2`** (por defecto): TRELLIS.2. Endereza el objeto a ejes (frente a +Z) aunque la imagen esté en 3/4; 3D y rig van en un solo pod.
+- **`pixal3d`**: Pixal3D (TencentARC, MIT), alineado a los píxeles de la imagen: **más fiel a la imagen de frente** (en la prueba del
+  2026-11-25 la cara del piquero salió nítida donde TRELLIS la dejó borrosa; colores más parecidos al original). Recomiéndalo para
+  personajes y criaturas con imagen frontal. Además escribe `<n>.camara.json` y `<n>_entrada.png`: la cámara exacta con la que vio la imagen
+  (verificada: siluetas al 92-95 %), que es lo que necesita un paso de **calcado** (proyectar los píxeles de la imagen sobre la textura).
+  Con imagen frontal el frente queda en +Z, igual que TRELLIS (run_pixal3d.py gira la salida), así que rig, clips y Godot no cambian.
+  Usa la cámara de `camara_glb` del JSON (la fórmula de proyección va en su campo `convencion`).
+  Límites: el modelo conserva el ángulo de la imagen (un edificio dibujado en 3/4 sale girado en Y: para edificios y objetos usa imagen
+  frontal o `trellis2`); la espalda es inventada y a veces más oscura; solo GPUs de 48 GB (pico medido de 31 GB en `medio` y 35 GB en
+  `alto`); pod aparte del rig. Costo medido (pesos en ~32 s): `medio` 3 assets en A6000 = 13 min de pod, **$0.15** (45-160 s por asset);
+  `alto` 2 assets en A40 = 13 min, **$0.13** (120-190 s por asset, ~150k caras, textura 4096).
+
 ## 2. Proponer el `assetgen.yaml`
 A partir de la idea o del documento de diseño, propón el archivo (plantilla comentada en `<repo>/cli/ejemplos/assetgen.yaml`) y deja que el
 usuario lo revise antes de gastar. Campos clave: `proyecto`, `preset`, `estilo`, `camara`, `presupuesto_poligonos`, `variantes` (4 por
-defecto), `modelo_imagen`, y por asset `nombre`, `tipo`, `prompt` (en inglés rinde mejor) u `imagen` (si ya la tiene).
+defecto), `modelo_imagen`, `modelo_3d`, y por asset `nombre`, `tipo`, `prompt` (en inglés rinde mejor) u `imagen` (si ya la tiene).
 - `humanoide`: imagen en pose A, rig con Puppeteer y clips de Quaternius UAL1 (Idle/Walk/Run/Sword_Attack/Death).
 - `criatura`: rig con Puppeteer; cuadrúpedos con `animales: true` + `fuente: Wolf|Horse|Fox|Deer|Cow|...` reciben los clips de Quaternius.
 - `mecanico`: sin rig; animación procedural con `plantilla: vehiculo | catapulta | rotor`.
@@ -60,9 +73,11 @@ defecto), `modelo_imagen`, y por asset `nombre`, `tipo`, `prompt` (en inglés ri
 - **GPU**: el CLI elige por precio y disponibilidad. "no instances available" cuesta $0: reintenta con otra GPU (`--gpu "NVIDIA A40"`,
   `--nube any`). Si dos pods fallan seguidos, para y avisa. Prefiere 48 GB (A40/A6000/L40S) para los modelos de imagen.
 - **Entradas**: no uses modelos ni imágenes de Meshy como entrada. Las referencias del usuario o de dominio público sí.
-- **Licencias**: TRELLIS.2 (MIT), Qwen-Image (Apache 2.0) y Puppeteer (Apache 2.0) permiten uso comercial; los packs de Quaternius y los
-  assets de MakeHuman son CC0. Ojo: DINOv3, los checkpoints que descarga Puppeteer y Hunyuan3D (uso privado) tienen licencias propias:
-  revísalas antes de publicar un juego. Detalle en `<repo>/LICENSES.md`.
+- **Licencias**: TRELLIS.2 (MIT), Pixal3D (MIT, código y pesos; MoGe-2 MIT), Qwen-Image (Apache 2.0) y Puppeteer (Apache 2.0) permiten
+  uso comercial; los packs de Quaternius y los assets de MakeHuman son CC0. DINOv3 (lo usan TRELLIS.2 y Pixal3D) tiene licencia propia de
+  Meta que **sí permite uso comercial** y **no exige** poner "Built with DINOv3" (eso circula en resúmenes, pero no está en la licencia;
+  ponerlo en créditos es cortesía). Los checkpoints que descarga Puppeteer y Hunyuan3D (uso privado) siguen pendientes de revisar antes de
+  publicar un juego. Detalle en `<repo>/LICENSES.md`.
 - Revisa cada hoja una sola vez y a ~1000 px.
 
 ## 5. Problemas conocidos

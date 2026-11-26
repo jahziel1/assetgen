@@ -62,8 +62,11 @@ import o_voxel
 #    M = [[-1,0,0],[0,0,1],[0,1,0]] (det +1, rotacion propia, sin espejo).
 # ---------------------------------------------------------------------------------------------------------------------
 R_GRID = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float64)
-M_B2G = np.array([[-1, 0, 0], [0, 0, 1], [0, 1, 0]], dtype=np.float64)
-ROT_GLB = np.array([[-1, 0, 0, 0], [0, 0, -1, 0], [0, -1, 0, 0], [0, 0, 0, 1]], dtype=np.float64)   # el mismo que inference.py
+# assetgen anade un giro de 180 grados sobre Y (GY) al de inference.py para que el FRENTE mire a +Z, como en TRELLIS.2 (el rig, el
+# retarget de Quaternius y Godot cuentan con esa orientacion). La camara se gira igual: queda en +Z mirando hacia -Z.
+GY = np.diag([-1.0, 1.0, -1.0, 1.0])
+M_B2G = GY[:3, :3] @ np.array([[-1, 0, 0], [0, 0, 1], [0, 1, 0]], dtype=np.float64)
+ROT_GLB = GY @ np.array([[-1, 0, 0, 0], [0, 0, -1, 0], [0, -1, 0, 0], [0, 0, 0, 1]], dtype=np.float64)   # giro de inference.py + GY
 
 CONVENCION = (
     "Camara en el sistema del GLB exportado por run_pixal3d.py (el de inference.py de Pixal3D: to_glb + giro final): Y arriba, unidades del GLB "
@@ -71,8 +74,8 @@ CONVENCION = (
     "en convencion OpenGL: la camara MIRA HACIA -Z LOCAL, +X local = derecha de la imagen, +Y local = arriba de la imagen. Un punto P del GLB se "
     "proyecta asi: Pc = inv(camara_a_mundo) @ [P,1]; u = fx*Pc.x/(-Pc.z) + cx ; v = -fy*Pc.y/(-Pc.z) + cy, con (u,v) en pixeles de "
     "<n>_entrada.png (origen arriba-izquierda, v crece hacia abajo; cx=ancho/2, cy=alto/2 con pixel = cuadro de 1 unidad, es decir centro geometrico de la imagen). "
-    "Con esta cuenta el frente del objeto mira a -Z del GLB (la camara esta en -Z mirando hacia +Z). Si al renderizar con esta camara el calco sale "
-    "girado 180 grados sobre Y (camara en +Z), usar 'hipotesis_alternativa.camara_a_mundo'. "
+    "El frente del objeto mira a +Z del GLB, como en TRELLIS.2 (la camara esta en +Z mirando hacia -Z): run_pixal3d.py gira 180 grados sobre Y "
+    "la salida de inference.py. Verificado renderizando con esta camara: IoU de siluetas 0.92-0.95 contra <n>_entrada.png. "
     "Nota: el codigo de Pixal3D muestrea los rasgos con (x_pixel+0.5) y align_corners=False, o sea punto principal a medio pixel del centro (irrelevante a 512 px)."
 )
 
@@ -87,7 +90,7 @@ def camara_glb(camera_params, ancho, alto):
     c2w_b = np.array([[1, 0, 0, 0], [0, 0, -1, -d], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=np.float64)
     # mundo Blender -> GLB: rotacion M y escala mesh_scale (p_G = mesh_scale * M p_B)
     c2w_g = np.eye(4); c2w_g[:3, :3] = M_B2G @ c2w_b[:3, :3]; c2w_g[:3, 3] = ms * (M_B2G @ c2w_b[:3, 3])
-    # hipotesis alternativa: el GLB NO llevaria el giro final de inference.py (equivale a girar 180 grados sobre Y todo el conjunto camara+mundo)
+    # alternativa: camara para el GLB sin el giro GY de assetgen (girar 180 grados sobre Y todo el conjunto camara+mundo)
     gy = np.diag([-1.0, 1.0, -1.0, 1.0]); c2w_alt = gy @ c2w_g
     fx = (ancho / 2.0) / math.tan(ax / 2.0)            # = focal_length_pixels de project_points_to_image_batch, escalada de 512 a ancho
     fov_y = 2.0 * math.atan((alto / ancho) * math.tan(ax / 2.0))
@@ -102,7 +105,7 @@ def camara_glb(camera_params, ancho, alto):
         'intrinsecos_px': {'fx': float(fx), 'fy': float(fy), 'cx': ancho / 2.0, 'cy': alto / 2.0},
         'distancia_al_origen': float(ms * d),
     }, {
-        'descripcion': 'Si el calco sale girado 180 grados sobre Y, la camara correcta es esta (camara en +Z mirando a -Z, sin el giro final de inference.py).',
+        'descripcion': 'Camara para el GLB SIN el giro de 180 grados de assetgen (frente a -Z, como lo deja inference.py). No usar con los GLB de assetgen.',
         'camara_a_mundo': _lista(c2w_alt),
         'posicion': [float(x) for x in c2w_alt[:3, 3]],
     }, _lista(c2w_b)
@@ -194,7 +197,7 @@ def generar(name, entrada, cam, seed, prep_s):
             vertices=mesh.vertices, faces=mesh.faces, attr_volume=mesh.attrs, coords=mesh.coords,
             attr_layout=pipe.pbr_attr_layout, grid_size=res, aabb=[[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
             decimation_target=dec, texture_size=TEX, remesh=True, remesh_band=1, remesh_project=0, verbose=False)
-        glb.apply_transform(ROT_GLB)   # el mismo giro final que inference.py
+        glb.apply_transform(ROT_GLB)   # giro final de inference.py + 180 grados sobre Y (frente a +Z)
         glb.export(p, extension_webp=True)
         if os.path.getsize(p) / 2**20 <= MAXMB or attempt == 1: break
         print(f'{name}: glb {os.path.getsize(p)/2**20:.0f} MB > {MAXMB}, redecimando a {DECIM_FALLBACK}', flush=True); dec = DECIM_FALLBACK

@@ -84,7 +84,7 @@ def cmd_3d(args):
         extra_env["MULTIVISTA"] = "1"
     n_salidas = sum(len(salidas[n]) for n in pendientes)
 
-    c = _candidatas(args)
+    c = _candidatas(args, solo48=MOTORES_3D[motor].get("solo48", False))   # pixal3d: pico de ~31 GB de VRAM (medido), no cabe en 24 GB
     p = PRESETS_3D[preset]
     seg = ARRANQUE_EST + 90 + n_salidas * seg_asset_3d(preset, motor)
     log(f"motor 3D: {motor} (imagen {MOTORES_3D[motor]['imagen']})")

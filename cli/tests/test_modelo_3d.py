@@ -85,3 +85,10 @@ class PodsYComando(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGpuPixal3d(unittest.TestCase):
+    def test_pixal3d_solo_gpus_de_48(self):
+        from assetgen_cli.presets import MOTORES_3D
+        self.assertTrue(MOTORES_3D["pixal3d"].get("solo48"))
+        self.assertFalse(MOTORES_3D["trellis2"].get("solo48", False))
